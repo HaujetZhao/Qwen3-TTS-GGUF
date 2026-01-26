@@ -1426,7 +1426,7 @@ class Qwen3TTSTalkerDecoderLayer(GradientCheckpointingLayer):
 
 class Qwen3TTSTalkerModel(Qwen3TTSTalkerTextPreTrainedModel):
     config_class = Qwen3TTSTalkerConfig
-    base_model_prefix = "talker.model"
+    base_model_prefix = ""  # 独立模型，不需要前缀
 
     def __init__(self, config):
         super().__init__(config)

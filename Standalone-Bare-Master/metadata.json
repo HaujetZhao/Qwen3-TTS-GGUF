@@ -1,0 +1,14 @@
+{
+  "model_type": "Qwen3TTSTalkerModel",
+  "architecture": "Master-only (LLM Backbone)",
+  "source_model": "Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "extraction_date": "2026-01-26",
+  "components": {
+    "master": "LLM Backbone (28 layers, 2048 hidden)",
+    "codec_head": "Separated to codec_head.safetensors"
+  },
+  "usage": {
+    "load_with": "from bare_master.modeling import Qwen3TTSTalkerModel",
+    "config_class": "from bare_master.configuration import Qwen3TTSTalkerConfig"
+  }
+}
