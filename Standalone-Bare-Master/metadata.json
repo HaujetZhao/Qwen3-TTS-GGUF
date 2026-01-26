@@ -1,14 +1,21 @@
 {
   "model_type": "Qwen3TTSTalkerModel",
-  "architecture": "Master-only (LLM Backbone)",
+  "architecture": "Master-only (LLM Backbone) with Merged Embeddings + Full lm_head",
   "source_model": "Qwen3-TTS-12Hz-1.7B-CustomVoice",
   "extraction_date": "2026-01-26",
   "components": {
     "master": "LLM Backbone (28 layers, 2048 hidden)",
-    "codec_head": "Separated to codec_head.safetensors"
+    "merged_embedding": "Text (151936) + Codec (3072) = 155008 vocab size",
+    "lm_head": "Codec-only [2048, 155008] - Text part is ZEROS, only codec tokens [151936:155008] are active",
+    "codec_head_original": "Saved to codec_head.safetensors (for verification)",
+    "original_embeddings": "Saved to original_embeddings.safetensors (for verification)",
+    "tokenizer": "Copied from original model (required for GGUF)"
   },
   "usage": {
+    "gguf_conversion": "python convert_hf_to_gguf.py Standalone-Bare-Master --outfile master.gguf",
     "load_with": "from bare_master.modeling import Qwen3TTSTalkerModel",
-    "config_class": "from bare_master.configuration import Qwen3TTSTalkerConfig"
+    "config_class": "from bare_master.configuration import Qwen3TTSTalkerConfig",
+    "llamacpp_compatible": "伪装成 Qwen3-VL，包含完整 lm_head，支持 benchmark",
+    "note": "Text tokens: 0-151935, Codec tokens: 151936-155007"
   }
 }

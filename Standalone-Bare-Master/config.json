@@ -140,7 +140,7 @@
   "initializer_range": 0.02,
   "intermediate_size": 6144,
   "max_position_embeddings": 32768,
-  "model_type": "qwen3_tts_talker",
+  "model_type": "qwen3_vl",
   "num_attention_heads": 16,
   "num_code_groups": 16,
   "num_hidden_layers": 28,
@@ -165,5 +165,9 @@
   "use_sliding_window": false,
   "vocab_size": 3072,
   "_original_model_type": "qwen3_tts_talker",
-  "_extracted_from": "Qwen3-TTS-12Hz-1.7B-CustomVoice"
+  "_extracted_from": "Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "_actual_model_type": "qwen3_tts_talker",
+  "architectures": [
+    "Qwen3VLForConditionalGeneration"
+  ]
 }
