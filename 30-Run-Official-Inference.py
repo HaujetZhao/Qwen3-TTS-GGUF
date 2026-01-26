@@ -5,11 +5,13 @@ import torch
 import soundfile as sf
 import subprocess
 
-# Add current directory to sys.path so we can import qwen_tts if needed,
-# though pip install qwen-tts should make it available globally.
-# However, to be safe and ensure we use the local Qwen3-TTS library if the user intends so,
-# we can append it. But user said they installed it via pip.
-# We will use the pip installed one as requested.
+# Add current directory to project root
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+SOURCE_DIR = os.path.join(PROJECT_ROOT, "Qwen3-TTS")
+sys.path.insert(0, SOURCE_DIR) # Prioritize local source
+
+import qwen_tts
+print(f"Imported qwen_tts from: {qwen_tts.__file__}")
 
 from qwen_tts import Qwen3TTSModel
 
