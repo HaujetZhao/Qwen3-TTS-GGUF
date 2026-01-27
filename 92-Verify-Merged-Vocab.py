@@ -51,6 +51,7 @@ def verify_merged_vocab_loading():
     model.eval()
 
     # 加载 lm_head 从 safetensors (merged vocab 方案)
+    # 注意：llama.cpp 要求 lm_head 是 [2048, 151936]（转置后的格式）
     print("\nLoading lm_head from safetensors...")
     from safetensors import safe_open
     MODEL_WEIGHTS = os.path.join(MODEL_PATH, "model.safetensors")
@@ -60,14 +61,14 @@ def verify_merged_vocab_loading():
 
     # 检查 lm_head 的结构
     print(f"\n--- Analyzing lm_head Structure ---")
-    # 前 3072 列应该非零
-    codec_logits_part = lm_head[:, :3072]
-    padding_part = lm_head[:, 3072:]
-    print(f"  Codec logits part [0:3072]:")
+    # lm_head 是 [2048, 151936]，前 3072 列应该非零
+    codec_logits_part = lm_head[:, :3072]  # [2048, 3072]
+    padding_part = lm_head[:, 3072:]  # [2048, 151936-3072]
+    print(f"  Codec logits part [:, 0:3072]:")
     print(f"    - Shape: {codec_logits_part.shape}")
     print(f"    - Non-zero elements: {torch.count_nonzero(codec_logits_part).item()}")
     print(f"    - Mean abs value: {torch.abs(codec_logits_part).mean().item():.6f}")
-    print(f"  Padding part [3072:151936]:")
+    print(f"  Padding part [:, 3072:151936]:")
     print(f"    - Shape: {padding_part.shape}")
     print(f"    - Non-zero elements: {torch.count_nonzero(padding_part).item()}")
     print(f"    - Mean abs value: {torch.abs(padding_part).mean().item():.6f}")
@@ -85,14 +86,18 @@ def verify_merged_vocab_loading():
         attention_mask = torch.ones(inputs_embeds.shape[:2], device=device)
         outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
         last_hidden_state = outputs.last_hidden_state
-        next_hidden = last_hidden_state[:, -1, :]
+        next_hidden = last_hidden_state[:, -1, :]  # [1, 2048]
 
-        # 使用加载的 lm_head: [2048, 151936]
-        # 但只需要前 3072 列（codec logits）
-        actual_logits_full = torch.matmul(next_hidden.to(torch.float32), lm_head.to(torch.float32))
-        actual_logits = actual_logits_full[:, :3072]  # 只取前 3072 个
-        print(f"Full logits shape: {actual_logits_full.shape}")  # [1, 151936]
+        # lm_head 是 [2048, 151936]，直接用矩阵乘法
+        # logits = next_hidden @ lm_head
+        # 但实际上 HF 模型输出的是 hidden_states，需要手动乘以 lm_head
+        # 这里我们只需要前 3072 列（codec logits）
+        actual_logits = torch.matmul(next_hidden.to(torch.float32), codec_logits_part.to(torch.float32))
         print(f"Codec logits shape: {actual_logits.shape}")  # [1, 3072]
+
+        # 如果要计算完整的 logits（包括 padding 部分）
+        actual_logits_full = torch.matmul(next_hidden.to(torch.float32), lm_head.to(torch.float32))
+        print(f"Full logits shape: {actual_logits_full.shape}")  # [1, 151936]
 
     # 验证结果
     print("\n--- Results ---")
@@ -109,10 +114,17 @@ def verify_merged_vocab_loading():
     print(f"  Maximum logit value: {max_logit_value.item():.6f} at position {max_logit_pos.item()}")
     print(f"  Is maximum in codec range [0, 3071]? {max_logit_pos.item() < 3072}")
 
-    # 检查 padding 部分的 logits
+    # 检查 padding 部分的 logits（应该是零或者非常接近零）
     padding_logits = full_logits_for_last_token[3072:]
-    print(f"  Padding logits range: [{padding_logits.min().item():.6f}, {padding_logits.max().item():.6f}]")
-    print(f"  Padding logits are all close to zero: {torch.allclose(padding_logits, torch.zeros_like(padding_logits), atol=1e-6)}")
+    print(f"  Padding logits [3072:151936]:")
+    print(f"    - Range: [{padding_logits.min().item():.6f}, {padding_logits.max().item():.6f}]")
+    print(f"    - Mean: {padding_logits.mean().item():.6f}")
+    print(f"    - Std: {padding_logits.std().item():.6f}")
+
+    # 检查 padding logits 是否都接近零
+    # 由于 lm_head 的 padding 部分是零，所以 logits 也应该是零
+    is_all_zero = torch.allclose(padding_logits, torch.zeros_like(padding_logits), atol=1e-6)
+    print(f"    - All close to zero: {is_all_zero}")
 
     if actual_id == expected_id:
         print("\n[SUCCESS] Merged vocab model works correctly!")
