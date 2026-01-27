@@ -12,19 +12,12 @@ import os
 import sys
 import numpy as np
 import ctypes
+import qwen3_tts_gguf.nano_llama as nano_llama
 
-os.environ["VK_ICD_FILENAMES"] = "none" # 禁用 Vulkan 以保证数值一致性测试稳健
+# os.environ["VK_ICD_FILENAMES"] = "none" # 禁用 Vulkan 以保证数值一致性测试稳健
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# 确保能导入 qwen3_tts_gguf
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
 
-try:
-    import qwen3_tts_gguf.nano_llama as nano_llama
-except ImportError:
-    print("❌ Failed to import nano_llama. Please ensure qwen3_tts_gguf is in path.")
-    sys.exit(1)
 
 def run_inference(ctx, inputs_embeds, vocab_size, expected_token_id):
     """执行单次推理"""
