@@ -37,29 +37,13 @@ def verify_standard_loading():
     print(f"  _codec_only_vocab: {getattr(config, '_codec_only_vocab', False)}")
 
     # 方法1: 使用 from_pretrained (标准方法)
-    print("\n[Method 1] Using from_pretrained()...")
-    try:
-        model = Qwen3TTSTalkerModel.from_pretrained(
-            MODEL_PATH,
-            torch_dtype=torch.bfloat16,
-            device_map=device
-        )
-        print("  Successfully loaded using from_pretrained()!")
-    except Exception as e:
-        print(f"  Error loading with from_pretrained(): {e}")
-        print("\n[Fallback] Trying manual config loading...")
-        # 方法2: 手动加载配置和模型
-        config = Qwen3TTSTalkerConfig.from_pretrained(MODEL_PATH)
-        model = Qwen3TTSTalkerModel(config).to(device).to(torch.bfloat16)
-        # 手动加载权重
-        from safetensors import safe_open
-        weights_path = os.path.join(MODEL_PATH, "model.safetensors")
-        state_dict = {}
-        with safe_open(weights_path, framework="pt", device=device) as f:
-            for key in f.keys():
-                state_dict[key] = f.get_tensor(key)
-        model.load_state_dict(state_dict)
-        print("  Successfully loaded using manual method!")
+    print("\nUsing from_pretrained()...")
+    model = Qwen3TTSTalkerModel.from_pretrained(
+        MODEL_PATH,
+        torch_dtype=torch.bfloat16,
+        device_map=device
+    )
+    print("  Successfully loaded using from_pretrained()!")
 
     model.eval()
 
