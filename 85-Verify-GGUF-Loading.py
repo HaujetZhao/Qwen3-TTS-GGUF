@@ -75,43 +75,50 @@ def run_inference(ctx, inputs_embeds, vocab_size, expected_token_id):
     max_logit_idx = int(np.argmax(logits_arr))
     max_logit_val = np.max(logits_arr)
     
-    print(f"  Vocab Size: {vocab_size}")
-    print(f"  Predicted Token ID: {max_logit_idx}")
+    print(f"  词汇表大小: {vocab_size}")
+    print(f"  生成的 Token ID: {max_logit_idx}")
+    print(f"  期望的 Token ID: {expected_token_id}")
     print(f"  Max Logit Value:    {max_logit_val:.4f}")
     
     if max_logit_idx == expected_token_id:
-        print("  ✅ MATCH Expected Token ID")
+        print("  ✅ 匹配成功")
     else:
-        print(f"  ⚠️ MISMATCH! Expected {expected_token_id}, got {max_logit_idx}")
+        print(f"  ⚠️ 匹配失败，期望 {expected_token_id}  得到 {max_logit_idx}")
     
     # 额外的数值检查
     if vocab_size != 3072:
-        print(f"  ⚠️ Warning: GGUF vocab size is {vocab_size}, expected 3072 for Codec-Only model.")
+        print(f"  ⚠️ 实际词汇表大小为 {vocab_size}, 期望大小为 3072 ")
     
     return True
 
 def main():
-    GGUF_PATH = os.path.join(PROJECT_ROOT, "master-codec-only-3072-f16.gguf")
-    INPUT_NPY = os.path.join(PROJECT_ROOT, "40_first_step_embeds.npy")
+    # 定义文件名常量
+    FILE_GGUF   = "master-codec-only-3072-f16.gguf"
+    FILE_EMBDS  = "40-saved-input-embds.npy"
+    FILE_LOGITS = "40-saved-input-logits.npy"
 
-    if not os.path.exists(GGUF_PATH):
-        print(f"❌ GGUF model not found: {GGUF_PATH}")
+    path_gguf   = os.path.join(PROJECT_ROOT, FILE_GGUF)
+    path_embds  = os.path.join(PROJECT_ROOT, FILE_EMBDS)
+    path_logits = os.path.join(PROJECT_ROOT, FILE_LOGITS)
+
+    if not os.path.exists(path_gguf):
+        print(f"❌ 没有找到模型文件 {path_gguf}")
         return
     
-    if not os.path.exists(INPUT_NPY):
-        print(f"❌ Input embeddings not found: {INPUT_NPY}")
+    if not os.path.exists(path_embds):
+        print(f"❌ 没有找到嵌入 {path_embds}")
         return
 
-    print(f"Loading model: {GGUF_PATH}")
+    print(f"Loading model: {path_gguf}")
     # 加载模型 (CPU mode for verification usually suffices and is deterministic)
-    model = nano_llama.load_model(GGUF_PATH, n_gpu_layers=0)
+    model = nano_llama.load_model(path_gguf, n_gpu_layers=0)
     if not model:
-        print("❌ Failed to load model")
+        print("❌ 模型载入失败")
         return
 
     vocab = nano_llama.llama_model_get_vocab(model)
     vocab_size = nano_llama.llama_vocab_n_tokens(vocab)
-    print(f"Model loaded. Vocab size: {vocab_size}")
+    print(f"模型已加载 Vocab size: {vocab_size}")
 
     # 创建 Context
     ctx_params = nano_llama.llama_context_default_params()
@@ -120,16 +127,37 @@ def main():
     ctx = nano_llama.llama_init_from_model(model, ctx_params)
     
     if not ctx:
-        print("❌ Failed to create context")
+        print("❌ 创建上下文失败")
         nano_llama.llama_model_free(model)
         return
 
     # 加载输入
-    embeds = np.load(INPUT_NPY)
-    print(f"Loaded inputs from {INPUT_NPY}, shape: {embeds.shape}")
+    embeds = np.load(path_embds)
+    print(f"成功加载嵌入 {path_embds}, shape: {embeds.shape}")
 
-    # 运行验证 (Expected ID 1995 comes from previous 94 script knowledge)
-    run_inference(ctx, embeds, vocab_size, expected_token_id=1995)
+    # 动态加载官方 Logits 以获取期望结果
+    if os.path.exists(path_logits):
+        official_logits = np.load(path_logits)
+        # 假设 logits shape 是 (1, 3072) 或者 (1, 14, 3072)
+        # 前面的脚本输出显示 shape 是 (1, 3072)
+        if len(official_logits.shape) == 2:
+             # (1, 3072)
+             expected_logit_arr = official_logits[0]
+        elif len(official_logits.shape) == 3:
+             # (1, 14, 3072) -> 取最后一个位置
+             expected_logit_arr = official_logits[0, -1, :]
+        else:
+             expected_logit_arr = official_logits.flatten()
+
+        expected_token_id = int(np.argmax(expected_logit_arr))
+        expected_val = float(np.max(expected_logit_arr))
+        print(f"动态计算期望结果: Token ID {expected_token_id} (Official Logit: {expected_val:.4f})")
+    else:
+        print(f"⚠️ 未找到 Logits 文件 {path_logits}，使用默认值 1995")
+        expected_token_id = 1995
+
+    # 运行验证
+    run_inference(ctx, embeds, vocab_size, expected_token_id=expected_token_id)
 
     # 清理
     nano_llama.llama_free(ctx)

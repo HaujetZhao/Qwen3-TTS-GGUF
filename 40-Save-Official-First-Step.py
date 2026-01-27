@@ -41,11 +41,10 @@ def main():
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     MODEL_PATH = os.path.abspath("Qwen3-TTS-12Hz-1.7B-CustomVoice")
     
-    print("Loading official model...")
+    print("载入官方模型中...")
     dtype = torch.float32 if device == "cpu" else torch.bfloat16
     tts = Qwen3TTSModel.from_pretrained(MODEL_PATH, device_map=device, dtype=dtype)
     
-    # --- 挂载 Hook ---
     # 拦截 Embeddings
     handle_in = tts.model.talker.model.register_forward_pre_hook(talker_model_pre_hook, with_kwargs=True)
     # 拦截 Logits
@@ -59,54 +58,34 @@ def main():
         "temperature": 1.0,
     }
     
-    print("Running official inference for '今天天气好'...")
-    # 我们拦截并在内部保存数据
-    # 为了获取最终的 input_ids，我们拦截 generate 函数的参数
-    original_generate = tts.model.talker.generate
-    def intercepted_generate(*args, **kwargs):
-        # inputs_embeds 在这里可能还没生成，但 input_ids 应该在 kwargs 里
-        # 或者在 generate 内部拼凑
-        # 实际上我们可以在 talker.model.forward 里拦截，那里有最终的 inputs_embeds
-        return original_generate(*args, **kwargs)
+    print("用官方模型推理「今天天气好」...")
     
-    # 重新注册一个 hook 来捕获输入的 input_ids (在 talker.generate 内部计算出的)
-    # 我们直接拦截 Qwen3TTSTalkerForConditionalGeneration.forward
-    def talker_forward_hook(module, args, kwargs):
-        input_ids = kwargs.get('input_ids')
-        if input_ids is not None and 'input_ids' not in captured_data:
-            print(f"[CAPTURE] Intercepted input_ids: {input_ids}")
-            captured_data['input_ids'] = input_ids.detach().cpu().numpy()
-        return None
-    
-    handle_ids = tts.model.talker.register_forward_pre_hook(talker_forward_hook, with_kwargs=True)
-
     tts.generate_custom_voice(
         text="今天天气好",
         speaker="Vivian",
         language="Chinese",
         **deterministic_kwargs
     )
+
+    name_embds  = '40-saved-input-embds.npy'
+    name_logits = '40-saved-input-logits.npy'
+    name_code0  = '40-saved-output-code0.npy'
     
     # --- 保存数据 ---
     if 'inputs_embeds' in captured_data and 'logits' in captured_data:
         # 保存为 npy
-        np.save("40_first_step_embeds.npy", captured_data['inputs_embeds'])
-        np.save("40_first_step_logits.npy", captured_data['logits'])
-        if 'input_ids' in captured_data:
-            np.save("40_first_step_ids.npy", captured_data['input_ids'])
-            print(f"Saved 40_first_step_ids.npy (Shape: {captured_data['input_ids'].shape})")
+        np.save(name_embds, captured_data['inputs_embeds'])
+        np.save(name_logits, captured_data['logits'])
         
         # 计算 code_0 并保存
         code_0 = np.argmax(captured_data['logits'], axis=-1)
-        np.save("40_first_step_code0.npy", code_0)
+        np.save(name_code0, code_0)
         
         print("\n--- Success ---")
-        print(f"Saved 40_first_step_embeds.npy (Shape: {captured_data['inputs_embeds'].shape})")
-        print(f"Saved 40_first_step_logits.npy (Shape: {captured_data['logits'].shape})")
+        print(f"Saved {name_embds} (Shape: {captured_data['inputs_embeds'].shape})")
+        print(f"Saved {name_logits} (Shape: {captured_data['logits'].shape})")
         print(f"Master first token (Code 0): {code_0[0]}")
         
-        # 还要把对应的 input_ids 记下来，通常 GGUF 需要 IDs
-        # 我们可以通过拦截 generate 的输入来获取
     else:
         print("❌ Error: Failed to capture data!")
     
