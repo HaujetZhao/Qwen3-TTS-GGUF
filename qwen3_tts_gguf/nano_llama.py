@@ -253,12 +253,13 @@ def init_llama_lib():
     llama_memory_clear.argtypes = [ctypes.c_void_p, ctypes.c_bool]
     llama_memory_clear.restype = None
 
-def load_model(model_path: str):
+def load_model(model_path: str, n_gpu_layers: int = -1):
     """
     加载 GGUF 模型（自动处理初始化和路径编码）
     
     Args:
         model_path: GGUF 模型文件路径
+        n_gpu_layers: GPU 卸载层数，-1 表示全部卸载，0 表示仅使用 CPU
         
     Returns:
         model: llama_model 指针
@@ -278,6 +279,9 @@ def load_model(model_path: str):
     # 初始化 backend，载入模型
     init_llama_lib()
     model_params = llama_model_default_params()
+    if n_gpu_layers != -1:
+        model_params.n_gpu_layers = n_gpu_layers
+
     model = llama_model_load_from_file(
         model_rel.as_posix().encode('utf-8'),
         model_params
