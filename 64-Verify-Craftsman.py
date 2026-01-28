@@ -138,14 +138,34 @@ def run_verification():
     gguf_output = np.ctypeslib.as_array(out_ptr, shape=(n_tokens, n_embd)).copy()
     
     # 7. 对比官方输出
-    # 注意：官方捕获的 output_hidden 是工匠 Transformer 最后一层的输出（在过 LM Head 之前）
     official_output = np.load(output_path).astype(np.float32)
     print(f"官方输出维度: {official_output.shape}") 
-    # 取最后一帧
     official_last = official_output.flatten().reshape(-1, 1024)[-1]
     gguf_last = gguf_output[-1]
     
     compare_vectors(official_last, gguf_last, "Step 0 Hidden State")
+    
+    # 8. 校验 Logits (Token ID)
+    n_vocab = nano_llama.llama_vocab_n_tokens(nano_llama.llama_model_get_vocab(model))
+    logits_ptr = nano_llama.llama_get_logits(ctx)
+    # 重要修正：如果 n_tokens > 1 且开了 embeddings，llama.cpp 可能会输出所有 token 的 logits
+    # 我们需要取最后一个 token 的预测结果
+    all_logits = np.ctypeslib.as_array(logits_ptr, shape=(n_tokens, n_vocab)).copy()
+    gguf_logits = all_logits[-1]
+    
+    gguf_id = np.argmax(gguf_logits)
+    
+    # 加载官方 ID
+    official_id_path = os.path.join(CAPTURED_DIR, "step_0_output_ids.npy")
+    if os.path.exists(official_id_path):
+        official_id = np.load(official_id_path).flatten()[0]
+        if gguf_id == official_id:
+            print(f"✅ [Step 0 Token ID] Match! ID: {gguf_id}")
+        else:
+            print(f"❌ [Step 0 Token ID] Mismatch! GGUF: {gguf_id}, Official: {official_id}")
+            print(f"   DEBUG: GGUF Token 0 Argmax: {np.argmax(all_logits[0])}")
+    else:
+        print(f"⚠️ 找不到官方 ID 文件: {official_id_path}")
     
     # 清理
     nano_llama.llama_batch_free(batch)
