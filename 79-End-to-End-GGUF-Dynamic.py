@@ -58,6 +58,7 @@ T_TTS_EOS = 151673
 # =========================================================================
 def load_all_assets():
     print("[1/6] 正在加载核心权重与分码表...")
+    start_load = time.time()
     assets = {
         "master_head": np.load(MASTER_HEAD_PATH),
         "text_table": np.load(TEXT_TABLE_PATH),
@@ -79,6 +80,7 @@ def load_all_assets():
     ]
     
     print("✅ 资产加载与预热完成。")
+    assets["load_time"] = time.time() - start_load
     return assets
 
 def apply_projection(hidden_2048, proj_assets):
@@ -92,6 +94,7 @@ def apply_projection(hidden_2048, proj_assets):
 # =========================================================================
 def construct_prompt(text, spk_id, assets):
     print(f"[2/6] 正在动态编译输入 Prompt...")
+    start_p = time.time()
     tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_PATH, trust_remote_code=True, fix_mistral_regex=True)
     content_ids = tokenizer.encode(text, add_special_tokens=False)
     
@@ -116,6 +119,8 @@ def construct_prompt(text, spk_id, assets):
         c_vec = codec_table_0[cid] if cid != 0 else np.zeros(2048, dtype=np.float32)
         embed_list.append(t_vec + c_vec)
         
+        
+    assets["prompt_time"] = time.time() - start_p
     return np.array(embed_list).reshape(1, len(sequence), 2048).astype(np.float32)
 
 # =========================================================================
@@ -128,6 +133,7 @@ def run_end_to_end():
     prompt_embeds = construct_prompt(TARGET_TEXT, SPEAKER_ID, assets)
     
     # 初始化 GGUF 引擎
+    m_init_start = time.time()
     print("[3/6] 初始化 GGUF 模型 (Master & Craftsman)...")
     m_model = nano_llama.load_model(MASTER_GGUF, n_gpu_layers=-1)
     c_model = nano_llama.load_model(CRAFTSMAN_GGUF, n_gpu_layers=-1)
@@ -146,6 +152,8 @@ def run_end_to_end():
     
     # 初始化 ONNX Mouth
     mouth_sess = ort.InferenceSession(MOUTH_ONNX, providers=['CPUExecutionProvider'])
+    m_init_end = time.time()
+    init_time = m_init_end - m_init_start
     
     # -----------------------
     # 执行生成
@@ -154,6 +162,7 @@ def run_end_to_end():
     start_time = time.time()
     
     # A. 大师 Prefill
+    prefill_start = time.time()
     n_prefill = prompt_embeds.shape[1]
     m_batch = nano_llama.llama_batch_init(4096, 2048, 1)
     m_batch.n_tokens = n_prefill
@@ -168,22 +177,32 @@ def run_end_to_end():
     
     m_hidden_last = np.ctypeslib.as_array(nano_llama.llama_get_embeddings(m_ctx), shape=(n_prefill, 2048))[-1].copy()
     current_m_pos = n_prefill
+    prefill_time = time.time() - prefill_start
     all_codes = []
     
     # B. 自回归循环
     loop_start = time.time()
     c_batch = nano_llama.llama_batch_init(32, 1024, 1)
     
+    # 统计内部耗时
+    master_total_time = 0
+    craftsman_total_time = 0
+    feedback_total_time = 0
+    
     for step_idx in range(MAX_STEPS):
         # 1. 大师预测分码 0
+        m_step_start = time.time()
         m_logits = m_hidden_last @ assets["master_head"].T
         code_0 = np.argmax(m_logits)
+        master_total_time += (time.time() - m_step_start)
+        
         if code_0 == EOS_TOKEN_ID: break
         
         step_codes = [code_0]
         step_emb_2048 = [assets["emb_tables"][0][code_0].copy()]
         
         # 2. 工匠执行 15 步生成
+        c_step_start = time.time()
         m_hidden_1024 = apply_projection(m_hidden_last, assets["proj"])
         c_in_1024 = np.stack([m_hidden_1024, assets["emb_tables_1024"][0][code_0]], axis=0)
         
@@ -208,10 +227,12 @@ def run_end_to_end():
                 c_batch.logits[0] = 1
                 nano_llama.llama_decode(c_ctx, c_batch)
                 last_logits = np.ctypeslib.as_array(nano_llama.llama_get_logits(c_ctx), shape=(30720,))
+        craftsman_total_time += (time.time() - c_step_start)
         
         all_codes.append(step_codes)
         
         # 3. 反馈给大师
+        f_step_start = time.time()
         summed = np.sum(step_emb_2048, axis=0) + assets["tts_pad"].flatten()
         m_batch.n_tokens = 1
         ctypes.memmove(m_batch.embd, summed.ctypes.data, summed.nbytes)
@@ -220,25 +241,39 @@ def run_end_to_end():
         nano_llama.llama_decode(m_ctx, m_batch)
         current_m_pos += 1
         m_hidden_last = np.ctypeslib.as_array(nano_llama.llama_get_embeddings(m_ctx), shape=(1, 2048))[0].copy()
+        feedback_total_time += (time.time() - f_step_start)
         
     loop_end = time.time()
     
     # C. 音频解码
     print(f"\n[5/6] 渲染音频中 (帧数: {len(all_codes)})...")
     if len(all_codes) == 0: return
+    decode_start = time.time()
     codes_input = np.array(all_codes)[np.newaxis, ...].astype(np.int64) # [1, T, 16]
     audio_data = mouth_sess.run(None, {'audio_codes': codes_input})[0].squeeze()
+    decode_end = time.time()
     
+    total_time = time.time() - start_time
     W_PATH = os.path.join(SAVE_DIR, "dynamic_gguf_output.wav")
     sf.write(W_PATH, audio_data, 24000)
     
     # D. 报告
-    total_time = time.time() - start_time
     audio_dur = len(audio_data) / 24000.0
-    print("\n--- [6/6] 性能报告 ---")
+    print("\n--- [6/6] 分时性能报告 ---")
     print(f"音频长度: {audio_dur:.2f} 秒")
-    print(f"总耗时: {total_time:.4f} 秒")
-    print(f"实时率 (RTF): {total_time / audio_dur:.4f}")
+    print("-" * 30)
+    print(f"1. 静态资产加载: {assets['load_time']:.4f} 秒")
+    print(f"2. Prompt 编译:  {assets['prompt_time']:.4f} 秒")
+    print(f"3. 模型引擎初始化: {init_time:.4f} 秒")
+    print(f"4. 大师 Prefill: {prefill_time:.4f} 秒")
+    print(f"5. 自回归循环总计: {loop_end - loop_start:.4f} 秒")
+    print(f"   └─ 大师预测 (Master):    {master_total_time:.4f} 秒")
+    print(f"   └─ 工匠预测 (Craftsman): {craftsman_total_time:.4f} 秒")
+    print(f"   └─ 反馈回路 (Feedback):  {feedback_total_time:.4f} 秒")
+    print(f"6. 嘴巴解码 (Mouth): {decode_end - decode_start:.4f} 秒")
+    print("-" * 30)
+    print(f"总端到端耗时: {total_time:.4f} 秒")
+    print(f"实时率 (RTF): {total_time / audio_dur:.4f} (越低越快)")
     print(f"✅ 合成音频已保存: {W_PATH}")
 
     # 清理
