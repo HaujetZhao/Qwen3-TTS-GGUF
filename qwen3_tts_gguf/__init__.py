@@ -32,10 +32,10 @@ if not logger.handlers:
     )
 
     # A. 控制台输出
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    # console_handler = logging.StreamHandler(sys.stdout)
+    # console_handler.setLevel(logging.INFO)
+    # console_handler.setFormatter(formatter)
+    # logger.addHandler(console_handler)
 
     # B. 文件输出 (覆盖模式)
     log_file_path = os.path.join(LOG_DIR, "latest.log")

@@ -361,8 +361,8 @@ def configure_logging(quiet=False):
     # 或者我们可以通过一个“Silence”标志来处理。
     # 目前，我们将所有内容路由到 logger。
     
-    # _log_callback_ref = LOG_CALLBACK(python_log_callback)
-    # llama_log_set(_log_callback_ref, None)
+    _log_callback_ref = LOG_CALLBACK(python_log_callback)
+    llama_log_set(_log_callback_ref, None)
 
 # =========================================================================
 # Utilities
