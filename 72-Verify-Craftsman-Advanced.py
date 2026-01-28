@@ -71,8 +71,8 @@ def run_full_verification():
         
         # --- 新增：输入校验逻辑 ---
         if i > 0 and prev_gguf_id is not None:
-            # 构造输入：取前一帧 ID 在当前 Table i 对应的 Embedding
-            gguf_input_idx = int(prev_gguf_id + i * 2048)
+            # 构造输入：取前一帧 ID 在当前前一步 (i-1) 对应的 Embedding
+            gguf_input_idx = int(prev_gguf_id + (i - 1) * 2048)
             constructed_input = all_embd_weights[gguf_input_idx]
             # 官方当前步输入（取第一帧，即当前步新输入的 token）
             official_input_this_step = flat_input[0]
