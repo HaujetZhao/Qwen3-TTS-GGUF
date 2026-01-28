@@ -149,6 +149,34 @@ def main():
         predictor.model.register_forward_pre_hook(predictor_model_pre_hook, with_kwargs=True)
         predictor.model.register_forward_hook(predictor_model_post_hook)
         
+        # 4. 插桩 Predictor 整体以捕获最终被选中的 Token ID
+        # 注意: 由于 model_post_hook 会让 step + 1，所以这里的 step 要 -1
+        def predictor_wrapper_post_hook(module, input, output):
+            if state.master_step != state.target_master_step:
+                return None
+            
+            # output 可能是 CausalLMOutputWithPast 或 tuple(logits, past_key_values)
+            if hasattr(output, 'logits'):
+                logits = output.logits
+            elif isinstance(output, (list, tuple)):
+                logits = output[0]
+            else:
+                return None
+            
+            # Logits shape: [batch, 1, vocab_size] (usually)
+            # Take argmax
+            token_id = torch.argmax(logits[:, -1, :], dim=-1) # [batch]
+            
+            # 因为 model_post_hook 已经把 step 加 1 了，所以这里对应的是上一步
+            step = state.pred_step - 1
+            if step >= 0:
+                np.save(os.path.join(SAVE_DIR, f"step_{step}_output_ids.npy"), 
+                        token_id.detach().cpu().to(torch.int32).numpy())
+                print(f"[CAPTURE] Pred Step {step}: Output Token ID Saved.")
+            return None
+
+        predictor.register_forward_hook(predictor_wrapper_post_hook)
+        
         # 固定随机性
         deterministic_kwargs = {
             "do_sample": False,
@@ -170,10 +198,12 @@ def main():
         print(f"文件保存在: {SAVE_DIR}")
         print(f"总计捕获工匠推理步数: {state.pred_step} (应为 15 步)")
         
-    except Exception as e:
-        print(f"❌ 捕获失败: {e}")
+    except BaseException as e:
+        sys.stdout.flush()
+        print(f"❌ 捕获失败 (BaseException): {e}")
         import traceback
         traceback.print_exc()
+        sys.stdout.flush()
 
 if __name__ == "__main__":
     main()
