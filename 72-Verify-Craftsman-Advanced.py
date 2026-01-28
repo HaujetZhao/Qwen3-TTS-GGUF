@@ -69,21 +69,26 @@ def run_full_verification():
         flat_input = proj_input.reshape(-1, n_embd)
         n_tokens = flat_input.shape[0]
         
-        # --- 新增：输入校验逻辑 ---
+        # --- 新增：输入校验逻辑 & 自回归切换 ---
         if i > 0 and prev_gguf_id is not None:
             # 构造输入：取前一帧 ID 在当前前一步 (i-1) 对应的 Embedding
             gguf_input_idx = int(prev_gguf_id + (i - 1) * 2048)
             constructed_input = all_embd_weights[gguf_input_idx]
-            # 官方当前步输入（取第一帧，即当前步新输入的 token）
+            
+            # 对比官方输入（仅用于参考）
             official_input_this_step = flat_input[0]
             compare_vectors(official_input_this_step, constructed_input, f"S{i} Input Emb")
+            
+            # 【关键修改】：将构造的输入作为本步实际推理输入，实现真自回归
+            flat_input = constructed_input.reshape(1, n_embd)
+            n_tokens = 1
 
-        # 2. 构造 Batch 并推理
+        # 2. 构造 Batch 并推理 (由于 i>0 时 flat_input 已被替换，这里实现了自回归)
         batch = nano_llama.llama_batch_init(n_tokens, n_embd, 1)
         batch.n_tokens = n_tokens
         
         # 注入数据 (Embeddings 模式)
-        embd_data = np.ascontiguousarray(flat_input)
+        embd_data = np.ascontiguousarray(flat_input.astype(np.float32))
         ctypes.memmove(batch.embd, embd_data.ctypes.data, embd_data.nbytes)
         
         # 计算当前位置 (KV Cache 累积)
@@ -107,10 +112,10 @@ def run_full_verification():
         gguf_hidden_last = gguf_hidden_all[-1]
         
         official_hidden_path = os.path.join(CAPTURED_DIR, f"step_{i}_output_hidden.npy")
-        official_hidden = np.load(official_hidden_path).astype(np.float32)
-        off_hidden_last = official_hidden.flatten().reshape(-1, n_embd)[-1]
-        
-        compare_vectors(off_hidden_last, gguf_hidden_last, f"S{i} Hidden")
+        if os.path.exists(official_hidden_path):
+            official_hidden = np.load(official_hidden_path).astype(np.float32)
+            off_hidden_last = official_hidden.flatten().reshape(-1, n_embd)[-1]
+            compare_vectors(off_hidden_last, gguf_hidden_last, f"S{i} Hidden")
 
         # 4. 验证 Token ID 对齐 (LM Head & Shift 逻辑)
         # 获取 Logits [n_tokens, 30720]
