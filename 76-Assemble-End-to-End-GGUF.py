@@ -35,7 +35,29 @@ def load_assets():
     assets["prefill_input"] = np.load(os.path.join(CAPTURED_DIR, "prefill_input_embeds.npy")).astype(np.float32)
     assets["trailing_text"] = np.load(os.path.join(CAPTURED_DIR, "trailing_text_hidden.npy")).astype(np.float32)
     assets["tts_pad"] = np.load(os.path.join(CAPTURED_DIR, "tts_pad_embed.npy")).astype(np.float32)
-    print("✅ 资产加载完成。")
+    
+    # 真值
+    try:
+        assets["official_codes"] = np.load(os.path.join(os.path.dirname(CAPTURED_DIR), "captured_full_gen", "full_generated_codes.npy"))
+        print(f"  ✅ 发现官方真值 (共 {len(assets['official_codes'])} 步)")
+    except Exception:
+        print("  ⚠️ 未发现官方真值，将进行盲跑。")
+        assets["official_codes"] = None
+
+    # 预计算 1024 维度的工匠输入表 (加速核心：避免运行期重复投影)
+    print("  正在预处理 1024 维工匠输入表...")
+    proj_w = assets["proj"]["weight"].float() # [1024, 2048]
+    proj_b = assets["proj"]["bias"].float()   # [1024]
+    
+    emb_tables_1024 = []
+    for i in range(16):
+        # 我们可以直接对整个表做线性变换
+        table_2048 = torch.from_numpy(assets["emb_tables"][i]).float()
+        table_1024 = F.linear(table_2048, proj_w, proj_b).numpy()
+        emb_tables_1024.append(table_1024)
+    assets["emb_tables_1024"] = emb_tables_1024
+    
+    print("✅ 资产加载与预投影处理完成。")
     return assets
 
 def apply_projection(hidden_2048, proj_assets):
@@ -157,8 +179,9 @@ def run_e2e_pipeline():
             step_embeds_2048.append(codec_emb_2048)
             
             if c_step < 15:
-                # 构造下一步 1024 投影输入
-                next_in_1024 = apply_projection(codec_emb_2048, assets["proj"])
+                # 性能优化：直接从预计算的 1024 维表中查找，避免实时投影运算
+                next_in_1024 = assets["emb_tables_1024"][c_step][code]
+                
                 c_batch.n_tokens = 1
                 c_batch.pos[0] = c_step + 1
                 ctypes.memmove(c_batch.embd, next_in_1024.ctypes.data, next_in_1024.nbytes)
@@ -194,9 +217,27 @@ def run_e2e_pipeline():
         m_hidden_last = np.ctypeslib.as_array(m_out_ptr, shape=(1, m_embd_dim))[0].copy()
 
     # ---------------------------------------------------------
-    # E. 嘴巴渲染 (Codec Decoding)
+    # E. 序列核验 (如果有真值)
     # ---------------------------------------------------------
-    print(f"\n[5/6] 渲染音频中 (ONNX Decoder)...")
+    print("\n[5/6] 执行序列核验...")
+    mine = np.array(all_step_codes)
+    auth = assets["official_codes"]
+    
+    if auth is not None:
+        min_len = min(len(mine), len(auth))
+        match = np.array_equal(mine[:min_len], auth[:min_len])
+        if match:
+             print("  ✅ 全序列完全对齐！优化后的双 GGUF 流水线精度通过。")
+        else:
+             print("  ❌ 序列存在不一致 (精度累积误差或逻辑分歧)。")
+             diffs = (mine[:min_len] != auth[:min_len]).any(axis=1)
+             first_diff = np.where(diffs)[0][0]
+             print(f"  首次分歧发生在 Step {first_diff}")
+    
+    # ---------------------------------------------------------
+    # F. 嘴巴渲染 (Codec Decoding)
+    # ---------------------------------------------------------
+    print(f"\n[6/6] 渲染音频中 (ONNX Decoder)...")
     if len(all_step_codes) == 0:
         print("❌ 未生成任何分码，跳过解码。")
         return
