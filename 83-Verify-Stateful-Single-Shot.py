@@ -38,10 +38,11 @@ def main():
     print("🧪 正在执行单次全量推理对比 (is_last_chunk=True)...")
     with torch.no_grad():
         # 这里模拟“只有一整块”的情况
-        audio, next_pkv, next_latent = wrapper(
+        audio, next_pkv, next_latent, next_conv_hist = wrapper(
             codes_torch, 
             past_key_values=None, 
             latent_buffer=None, 
+            conv_history=None,
             is_last_chunk=True
         )
         

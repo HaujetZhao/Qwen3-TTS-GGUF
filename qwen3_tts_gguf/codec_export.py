@@ -179,94 +179,118 @@ class StreamingCodecExportWrapper(nn.Module):
 class StatefulCodecExportWrapper(nn.Module):
     """
     Qwen3-TTS 终极有状态流式包装器。
-    它管理：
-    1. Transformer 的 KV Cache。
-    2. 卷积层的 4 帧前瞻 Buffer（需要累积够 4 帧有效特征才开始输出）。
-    3. 终止时的自动 Padding 和冲刷。
-    
-    关键设计：latent_buffer 存储的是真实的隐藏层特征，首次调用时为 None，
-    需要累积够 4 帧后才能开始正确输出音频。
     """
+    
+    # ========== 物理常数 (针对 12Hz 模型) ==========
+    # 前瞻帧数：为保证卷积链条对齐所需的未来最小上下文。
+    # 物理层级 4 层上采样决定了理论最小值为 4 帧。
+    LOOKAHEAD_FRAMES = 4
+    
+    # 预处理层 pre_conv 使用 kernel_size=3，因此固定需要 2 帧历史。
+    PRE_CONV_HISTORY_WINDOW = 2
+    # 后端卷积链历史，测试发现 4 帧即可满足状态恢复
+    CONV_HISTORY_WINDOW = 4
+    # ===============================================
+
     def __init__(self, model: Qwen3TTSTokenizerV2Model):
         super().__init__()
         self.decoder = model.decoder
         self.config = model.config
         self.decoder.eval()
+        # 24000 / 12.5 = 1920
+        self.samples_per_frame = self.config.decode_upsample_rate
 
-    def forward(self, audio_codes, past_key_values=None, latent_buffer=None, is_last_chunk=False):
+    def forward(self, audio_codes, past_key_values=None, latent_buffer=None, 
+                conv_history=None, pre_conv_history=None, is_last_chunk=False):
         """
-        Args:
-            audio_codes: [B, N, Q] 本次输入的新代码
-            past_key_values: Transformer 的缓存对象 (DynamicCache)
-            latent_buffer: [B, Hidden, M] 上轮累积的特征 (M <= 4，首次为 None)
-            is_last_chunk: 是否是最后一段，用于控制 flush 逻辑
-        Returns:
-            wav: [B, samples] 当前对应的音频 (可能为空 tensor)
-            next_pkv: 更新后的 KV 缓存
-            next_latent: 更新后的特征缓存
+        Qwen3-TTS 流式推理核心逻辑 (已修复 pre_conv 断层与对齐问题)。
         """
         B, N, Q = audio_codes.shape
         device = audio_codes.device
-        latent_dim = self.config.decoder_config.latent_dim
         
-        # 1. 码本解码与预处理
+        # 1. 码本解码与预处理历史
         codes = audio_codes.transpose(1, 2)
-        hidden = self.decoder.quantizer.decode(codes)
-        # PreConv 处理 [B, Hidden, N] -> [B, N, Hidden]
-        hidden = self.decoder.pre_conv(hidden).transpose(1, 2)
+        quantized = self.decoder.quantizer.decode(codes) # [B, Dim, N]
         
-        # 2. Transformer 有状态推理 (只算 N 个新帧)
+        if pre_conv_history is not None:
+            # 拼接历史以供 pre_conv 使用
+            quant_full = torch.cat([pre_conv_history, quantized], dim=-1)
+            h_quant_len = pre_conv_history.shape[-1]
+        else:
+            quant_full = quantized
+            h_quant_len = 0
+            
+        # 执行 pre_conv [B, Hidden, h+N]
+        hidden_all = self.decoder.pre_conv(quant_full)
+        # 裁切掉历史部分
+        hidden = hidden_all[:, :, h_quant_len:].transpose(1, 2) # [B, N, Hidden]
+        
+        # 保存新的 pre_conv 历史
+        next_pre_conv_hist = quantized[:, :, -self.PRE_CONV_HISTORY_WINDOW:].clone() if not is_last_chunk else None
+        
+        # 2. Transformer 推理 (有状态)
         outputs = self.decoder.pre_transformer(
             inputs_embeds=hidden,
             past_key_values=past_key_values,
             use_cache=True
         )
-        new_hidden = outputs.last_hidden_state # [B, N, Hidden]
+        new_hidden = outputs.last_hidden_state.transpose(1, 2) # [B, Hidden, N]
         next_pkv = outputs.past_key_values
         
-        # 3. 卷积前瞻对齐逻辑
-        # 转换维度为 [B, Hidden, N]
-        new_hidden_t = new_hidden.transpose(1, 2)
-        
-        # 累积特征：将新特征追加到 buffer
+        # 3. 维护 Latent Buffer (物理延迟对齐)
         if latent_buffer is None:
-            accumulated = new_hidden_t
+            accumulated = new_hidden
         else:
-            accumulated = torch.cat([latent_buffer, new_hidden_t], dim=-1)
+            accumulated = torch.cat([latent_buffer, new_hidden], dim=-1)
         
-        total_frames = accumulated.shape[-1]
+        total_acc_frames = accumulated.shape[-1]
         
-        # 判断是否有足够的帧来产出音频
-        # 需要至少 5 帧才能产出 1 帧音频（4 帧前瞻 + 1 帧当前）
+        # 4. 确定本次“可下发”给卷积链的帧数
         if is_last_chunk:
-            # 最后一段：直接输出所有累积的特征
-            # 原始卷积层是 Causal 设计，会自动处理边界 padding，无需手动追加
-            conv_input = accumulated
+            num_frames_to_finalize = total_acc_frames
             next_latent = None
-        elif total_frames <= 4:
-            # 累积不足：不输出音频，继续累积
-            return torch.zeros(B, 0, device=device), next_pkv, accumulated
+        elif total_acc_frames <= self.LOOKAHEAD_FRAMES:
+            return torch.zeros(B, 0, device=device), next_pkv, accumulated, conv_history, next_pre_conv_hist
         else:
-            # 正常流式：保留最后 4 帧，输出前面的
-            next_latent = accumulated[:, :, -4:].clone()
-            conv_input = accumulated[:, :, :-4]
+            num_frames_to_finalize = total_acc_frames - self.LOOKAHEAD_FRAMES
+            next_latent = accumulated[:, :, -self.LOOKAHEAD_FRAMES:].clone()
 
-        # 4. 进入卷积/上采样链条
-        curr = conv_input
-        # 4.1 Upsample 层 (DecoderDecoderBlock)
-        for blocks in self.decoder.upsample:
-            for block in blocks:
-                curr = block(curr)
+        finalize_hidden = accumulated[:, :, :num_frames_to_finalize]
         
-        # 4.2 最终解码层
-        wav = curr
-        for block in self.decoder.decoder:
-            wav = block(wav)
+        # 5. 卷积历史拼接
+        if conv_history is not None:
+            conv_chain_input = torch.cat([conv_history, finalize_hidden], dim=-1)
+            h_len = conv_history.shape[-1]
+        else:
+            conv_chain_input = finalize_hidden
+            h_len = 0
             
-        # [B, 1, samples] -> [B, samples]
-        audio_values = wav.squeeze(1).clamp(min=-1, max=1)
+        if not is_last_chunk and next_latent is not None:
+             conv_chain_input = torch.cat([conv_chain_input, next_latent], dim=-1)
         
-        return audio_values, next_pkv, next_latent
+        # 6. 执行卷积链推理
+        curr = conv_chain_input
+        for blocks in self.decoder.upsample:
+            for block in blocks: curr = block(curr)
+        for block in self.decoder.decoder:
+            curr = block(curr)
+            
+        wav = curr.squeeze(1).clamp(min=-1, max=1)
+        
+        # 7. 精确对齐裁剪
+        start_samples = h_len * self.samples_per_frame
+        end_samples = start_samples + num_frames_to_finalize * self.samples_per_frame
+        
+        actual_end = min(end_samples, wav.shape[-1])
+        final_wav = wav[:, start_samples:actual_end]
+        
+        # 8. 更新卷积历史
+        if is_last_chunk:
+            next_conv_hist = None
+        else:
+            next_conv_hist = finalize_hidden[:, :, -self.CONV_HISTORY_WINDOW:].clone()
+            
+        return final_wav, next_pkv, next_latent, next_conv_hist, next_pre_conv_hist
 
 class SpeakerEncoderExportWrapper(nn.Module):
     """

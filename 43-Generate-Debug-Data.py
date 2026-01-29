@@ -32,7 +32,7 @@ def main():
     print("🚀 正在初始化 Qwen3TTS 引擎...")
     tts = Qwen3TTS(model_root="model", tokenizer_path="Qwen3-TTS-12Hz-1.7B-CustomVoice")
     
-    TARGET_TEXT = "今天"
+    TARGET_TEXT = "哇哦你好呀！"
     SPEAKER = "vivian"
     LANGUAGE = "chinese"
     
@@ -45,8 +45,8 @@ def main():
     prompt_embeds = tts._construct_prompt(TARGET_TEXT, real_spk_id, real_lang_id)
     
     sampling_config = {
-        "master": {"do_sample": False, "temperature": 1.0, "top_p": 1.0, "top_k": 50},
-        "subtalker": {"do_sample": False, "temperature": 1.0, "top_p": 1.0, "top_k": 50}
+        "master": {"do_sample": True, "temperature": 1.0, "top_p": 1.0, "top_k": 50},
+        "subtalker": {"do_sample": True, "temperature": 1.0, "top_p": 1.0, "top_k": 50}
     }
     
     # 设置随机种子以保证实验可重复性

@@ -34,31 +34,32 @@ def main():
     # 4. 模拟流式推理
     print("🧪 正在执行流式分波段推理对比...")
     
-    # 参数设置：我们将 9 帧代码拆成 3 段，每段 3 帧
     chunk_size = 3
-    num_chunks = len(codes_np) // chunk_size
+    all_codes_len = len(codes_np)
     
     pkv = None
     latent_buf = None
+    conv_hist = None
+    pre_conv_hist = None
     all_chunks_audio = []
     
     with torch.no_grad():
-        for i in range(num_chunks):
-            start = i * chunk_size
-            end = start + chunk_size
-            is_last = (i == num_chunks - 1)
+        for start in range(0, all_codes_len, chunk_size):
+            end = min(start + chunk_size, all_codes_len)
+            is_last = (end == all_codes_len)
             
             # 准备当前 chunk 的输入
             chunk_codes = torch.from_numpy(codes_np[start:end]).unsqueeze(0).long()
             
-            print(f"  > 处理分片 {i+1}/{num_chunks} (帧 {start} 到 {end-1}, is_last={is_last})")
+            print(f"  > 处理分步: 帧 {start} 到 {end-1} (is_last={is_last})")
             
             # 执行有状态推理
-            # audio: [B, samples], pkv: Cache, latent_buf: [B, Hidden, 4]
-            audio, pkv, latent_buf = wrapper(
+            audio, pkv, latent_buf, conv_hist, pre_conv_hist = wrapper(
                 chunk_codes, 
                 past_key_values=pkv, 
                 latent_buffer=latent_buf, 
+                conv_history=conv_hist,
+                pre_conv_history=pre_conv_hist,
                 is_last_chunk=is_last
             )
             

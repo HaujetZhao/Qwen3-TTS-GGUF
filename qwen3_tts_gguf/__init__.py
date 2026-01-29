@@ -20,7 +20,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 # 2. 配置统一的 Logger
 # 使用固定名称以保证全局单例性
 logger = logging.getLogger("qwen3_tts_gguf")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 logger.propagate = False  # 防止向上层 Logger (如 root) 传播导致重复
 
 # 3. 添加 Handlers (仅在没有 Handler 时添加，防止重复)
