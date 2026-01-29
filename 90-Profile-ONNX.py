@@ -24,7 +24,7 @@ def main():
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     
     print(f"📦 正在加载 ONNX 模型: {ONNX_PATH}")
-    sess = ort.InferenceSession(ONNX_PATH, sess_options, providers=['CPUExecutionProvider'])
+    sess = ort.InferenceSession(ONNX_PATH, sess_options, providers=['DmlExecutionProvider'])
     
     # 2. 准备数据
     codes_ref = np.random.randint(0, 1024, (1, TOTAL_FRAMES, Q), dtype=np.int64)
