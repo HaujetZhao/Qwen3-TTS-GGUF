@@ -49,7 +49,7 @@ class Qwen3TTS:
         "THINK": 2154, "NOTHINK": 2155, "THINK_BOS": 2156, "THINK_EOS": 2157
     }
 
-    def __init__(self, model_root="model", tokenizer_path="Qwen3-TTS-12Hz-1.7B-CustomVoice"):
+    def __init__(self, model_root="model", tokenizer_path="model/tokenizer"):
         self.project_root = os.getcwd()
         self.model_dir = os.path.join(self.project_root, model_root)
         self.tokenizer_path = os.path.join(self.project_root, tokenizer_path)

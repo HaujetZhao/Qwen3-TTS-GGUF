@@ -9,7 +9,10 @@ if __name__ == "__main__":
     engine = Qwen3TTSDoubleStreamEngine()
     input("🚀 引擎已就绪。")
     
-    text = "你好，我是千问3-TTS，很高兴遇见你，你今天过得好吗？"
+    text = "你好，很高兴遇见你，你今天过得好吗？"
+    engine.synthesize(text, speaker_id="vivian", chunk_size=25)
+    
+    text = "哇哦！你好棒！"
     engine.synthesize(text, speaker_id="vivian", chunk_size=25)
 
     

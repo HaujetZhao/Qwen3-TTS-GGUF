@@ -109,16 +109,16 @@ def main():
         dynamic_axes[f"next_key_{i}"] = {2: f"next_seq_{i}"}
         dynamic_axes[f"next_value_{i}"] = {2: f"next_seq_{i}"}
     
-    # 7. 导出
-    onnx_path = os.path.join(OUTPUT_DIR, ONNX_FILENAME)
-    print(f"📦 正在导出 ONNX 到: {onnx_path}")
+    # 7. 导出 FP32 模型
+    onnx_path_fp32 = os.path.join(OUTPUT_DIR, ONNX_FILENAME)
+    print(f"📦 正在导出 FP32 ONNX 到: {onnx_path_fp32}")
     print(f"   使用经典 JIT 路径 (dynamo=False)...")
-    
+
     with torch.no_grad():
         torch.onnx.export(
             wrapper,
             dummy_inputs,
-            onnx_path,
+            onnx_path_fp32,
             input_names=input_names,
             output_names=output_names,
             dynamic_axes=dynamic_axes,
@@ -126,15 +126,32 @@ def main():
             do_constant_folding=True,
             dynamo=False,  # 关键：强制使用经典 JIT 路径
         )
-    
-    print(f"✅ ONNX 导出成功！文件大小: {os.path.getsize(onnx_path) / 1024 / 1024:.2f} MB")
-    
-    # 8. 简单验证
-    print("🔍 正在验证 ONNX 模型...")
+
+    fp32_size = os.path.getsize(onnx_path_fp32) / 1024 / 1024
+    print(f"✅ FP32 ONNX 导出成功！文件大小: {fp32_size:.2f} MB")
+
+    # 8. 导出 FP16 量化模型
+    from onnxconverter_common import float16
+    onnx_path_fp16 = os.path.join(OUTPUT_DIR, ONNX_FILENAME.replace('.onnx', '.fp16.onnx'))
+    print(f"\n📦 正在转换为 FP16 模型: {onnx_path_fp16}")
+
     import onnx
-    onnx_model = onnx.load(onnx_path)
+    onnx_model = onnx.load(onnx_path_fp32)
+
+    # 转换为 FP16
+    onnx_model_fp16 = float16.convert_float_to_float16(onnx_model, keep_io_types=False)
+    onnx.save(onnx_model_fp16, onnx_path_fp16)
+
+    fp16_size = os.path.getsize(onnx_path_fp16) / 1024 / 1024
+    compression_ratio = (1 - fp16_size / fp32_size) * 100
+    print(f"✅ FP16 ONNX 导出成功！文件大小: {fp16_size:.2f} MB")
+    print(f"   压缩率: {compression_ratio:.1f}%")
+
+    # 9. 验证两个模型
+    print("\n🔍 正在验证 ONNX 模型...")
     onnx.checker.check_model(onnx_model)
-    print("✅ ONNX 模型校验通过！")
+    onnx.checker.check_model(onnx_model_fp16)
+    print("✅ 两个 ONNX 模型校验都通过！")
 
 if __name__ == "__main__":
     main()
