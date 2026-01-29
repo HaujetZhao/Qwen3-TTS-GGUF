@@ -298,15 +298,37 @@ class StatefulCodecExportWrapper(nn.Module):
             
         return final_wav, next_pkv, next_latent, next_conv_hist, next_pre_conv_hist
 
+class TraceableKVStack:
+    """
+    一个极简的、可被 ONNX Trace 追踪的 KV 缓存容器。
+    它模拟了 transformers.Cache 的接口，但内部只使用纯 Tensor 操作。
+    """
+    def __init__(self, keys: list, values: list, window_size: int):
+        self.key_cache = keys
+        self.value_cache = values
+        self.window_size = window_size
+
+    def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
+        # 1. 拼接新 K/V [B, H, S_old + S_new, D]
+        k_combined = torch.cat([self.key_cache[layer_idx], key_states], dim=2)
+        v_combined = torch.cat([self.value_cache[layer_idx], value_states], dim=2)
+        
+        # 2. 负索引裁剪 (滑动窗口)
+        self.key_cache[layer_idx] = k_combined[:, :, -self.window_size:, :]
+        self.value_cache[layer_idx] = v_combined[:, :, -self.window_size:, :]
+        
+        return self.key_cache[layer_idx], self.value_cache[layer_idx]
+
+    def get_seq_length(self, layer_idx=0):
+        # 获取当前层缓存长度
+        return self.key_cache[layer_idx].shape[2]
+
+    def __len__(self):
+        return len(self.key_cache)
+
 class StatefulCodecONNXWrapper(nn.Module):
     """
-    Qwen3-TTS Stateful Decoder ONNX 导出专用包装类 (无 IF 分支版本)。
-    
-    【去 IF 核心设计】：
-    1. 移除 None：所有历史/缓存输入必须是具有正确维度(如 D, 0 或 D, N)的 Tensor。
-    2. 移除布尔：使用 torch.Tensor(0.0 或 1.0) 作为 is_last 标志。
-    3. 移除分支：利用 torch.cat 自动处理空 Tensor 拼接。
-    4. 移除对象：由于 ONNX 不支持 DynamicCache 对象，直接传入和返回展平的 K/V Tensor 列表。
+    Qwen3-TTS Stateful Decoder ONNX 导出专用包装类 (完全接管 Transformer 循环版)。
     """
     
     LOOKAHEAD_FRAMES = 4
@@ -320,9 +342,10 @@ class StatefulCodecONNXWrapper(nn.Module):
         self.config = model.config
         self.decoder.eval()
         self.samples_per_frame = self.config.decode_upsample_rate
-        
-        # 预探测必要的配置
         self.num_layers = self.decoder.config.num_hidden_layers
+        
+        # 提取 Transformer 核心引用以简化代码
+        self.trans = self.decoder.pre_transformer
 
     def forward(self, 
                 audio_codes: torch.Tensor, 
@@ -330,10 +353,10 @@ class StatefulCodecONNXWrapper(nn.Module):
                 pre_conv_history: torch.Tensor,
                 latent_buffer: torch.Tensor,
                 conv_history: torch.Tensor,
-                *past_key_values_flat # 传入 2 * num_layers 个 Tensor (k0, v0, k1, v1...)
+                *past_key_values_flat
                 ):
         """
-        全量算子化 forward。
+        全量算子化 forward，接管 Transformer 层循环。
         """
         B, N, Q = audio_codes.shape
         device = audio_codes.device
@@ -342,7 +365,7 @@ class StatefulCodecONNXWrapper(nn.Module):
         codes = audio_codes.transpose(1, 2)
         quantized = self.decoder.quantizer.decode(codes)
         
-        # 拼接预处理层历史 (无需 if，空 Tensor cat 依然正确)
+        # 拼接预处理层历史
         quant_full = torch.cat([pre_conv_history, quantized], dim=-1)
         h_quant_len = pre_conv_history.shape[-1]
         
@@ -350,53 +373,73 @@ class StatefulCodecONNXWrapper(nn.Module):
         hidden_all = self.decoder.pre_conv(quant_full)
         hidden = hidden_all[:, :, h_quant_len:].transpose(1, 2)
         
-        # 保存新的 pre_conv 历史 (恒切最后 2 帧，哪怕总长不足 2 也会自动返回全部)
         next_pre_conv_hist = quantized[:, :, -self.PRE_CONV_HISTORY_WINDOW:]
         
-        # 2. KV Cache 组装 (为了适配 pre_transformer 的接口)
-        from transformers.cache_utils import DynamicCache
-        pkv = DynamicCache()
-        for i in range(self.num_layers):
-            pkv.update(past_key_values_flat[2*i], past_key_values_flat[2*i+1], i)
-            
-        # 3. Transformer 推断
-        outputs = self.decoder.pre_transformer(
-            inputs_embeds=hidden,
-            past_key_values=pkv,
-            use_cache=True
-        )
-        new_hidden = outputs.last_hidden_state.transpose(1, 2)
-        pkv = outputs.past_key_values
+        # 2. 接管 Transformer 逻辑
+        # 2a. 输入投影
+        h = self.trans.input_proj(hidden)
         
-        # --- KV 负索引裁剪 (无 IF) ---
-        pkv.crop(self.KV_CACHE_WINDOW_SIZE)
+        # 2b. 维护 KV 栈并获取长度信息
+        keys_in = list(past_key_values_flat[:self.num_layers])
+        values_in = list(past_key_values_flat[self.num_layers:])
+        kv_stack = TraceableKVStack(keys_in, values_in, self.KV_CACHE_WINDOW_SIZE)
+        
+        past_len = kv_stack.get_seq_length()
+        total_len = past_len + N
+        
+        # 2c. 生成 Position IDs
+        # 使用 torch.arange 保证 Trace 动态性
+        position_ids = torch.arange(past_len, total_len, device=device).unsqueeze(0)
+        
+        # 2d. 生成旋转编码 (RoPE)
+        # 注意：modeling_tokenizer 的 rotary_emb 接受 (hidden, position_ids)
+        pos_embeddings = self.trans.rotary_emb(h, position_ids)
+        
+        # 2e. 手动生成 Attention Mask (因果掩码)
+        # 在流式下，查询帧数为 N，键值帧数为 Total_len。
+        # 我们生成一个 [1, 1, N, Total_len] 的矩阵，0 表示 allow，-inf 表示 block。
+        q_idx = torch.arange(N, device=device).unsqueeze(1) # [N, 1]
+        k_idx = torch.arange(total_len, device=device).unsqueeze(0) # [1, Total_len]
+        
+        # 掩码条件：键的位置 k_idx 必须小于等于当前查询对应的位置 (past_len + q_idx)
+        mask_cond = k_idx <= (past_len + q_idx)
+        # 额外：由于是滑动窗口，还需满足 k_idx > (past_len + q_idx - window_size)
+        # 虽然我们 KV Cache 已经切过 72 了，但为了逻辑严密，建议加上。
+        mask_cond = mask_cond & (k_idx > (past_len + q_idx - self.KV_CACHE_WINDOW_SIZE))
+        
+        attn_mask = torch.where(mask_cond, 0.0, -float("inf"))
+        attn_mask = attn_mask.unsqueeze(0).unsqueeze(0) # [1, 1, N, Total_len]
+        
+        # 2f. 逐层执行 Transformer
+        # 这里绕过了 Trans.forward()，直接遍历 Layers。
+        for layer in self.trans.layers:
+            # 传参顺序和命名参考 decoder_layer.forward
+            h = layer(
+                h, 
+                attention_mask=attn_mask,
+                position_ids=position_ids,
+                past_key_values=kv_stack,
+                use_cache=True,
+                position_embeddings=pos_embeddings
+            )
             
-        # 4. Latent Buffer 与卷积对齐
+        # 2g. 后处理
+        h = self.trans.norm(h)
+        new_hidden = self.trans.output_proj(h).transpose(1, 2) # [B, Hidden, N]
+            
+        # 3. Latent Buffer 与卷积对齐 (逻辑同前)
         accumulated = torch.cat([latent_buffer, new_hidden], dim=-1)
         total_acc_frames = accumulated.shape[-1]
         
-        # 计算确定可下发的帧数 (使用 torch.where 代替 if)
-        # is_last = 1.0 表示最后一段，0.0 表示正常流
-        num_finalize = torch.where(is_last > 0.5, 
-                                 torch.tensor(float(total_acc_frames), device=device), 
-                                 torch.max(torch.tensor(0.0, device=device), 
-                                         torch.tensor(float(total_acc_frames - self.LOOKAHEAD_FRAMES), device=device)))
-        num_finalize = num_finalize.long()
+        num_finalize = torch.where(
+            is_last > 0.5, 
+            torch.tensor(float(total_acc_frames), device=device), 
+            torch.clamp(torch.tensor(float(total_acc_frames - self.LOOKAHEAD_FRAMES), device=device), min=0.0)
+        ).long()
         
-        # 准备输出采样点范围
-        h_conv_len = conv_history.shape[-1]
-        start_samples = h_conv_len * self.samples_per_frame
-        end_samples = start_samples + num_finalize * self.samples_per_frame
-        
-        # 5. 卷积链准备
-        # 下一轮的 Latent Buffer (始终保留最后 4 帧)
         next_latent_buf = accumulated[:, :, -self.LOOKAHEAD_FRAMES:]
-        
-        # 输入卷积链：历史 + 当前积压数据。
-        # 逻辑：历史 + 积压区
         conv_chain_input = torch.cat([conv_history, accumulated], dim=-1)
         
-        # 6. 执行卷积链推理
         curr = conv_chain_input
         for blocks in self.decoder.upsample:
             for block in blocks: curr = block(curr)
@@ -405,25 +448,16 @@ class StatefulCodecONNXWrapper(nn.Module):
             
         wav = curr.squeeze(1).clamp(min=-1, max=1)
         
-        # 7. 切片截取音频
-        # 利用 slice 语法 [start:end]，若 start == end 则返回 [1, 0] 空音频，无报错
-        # 由于 end_samples 可能超过实际 wav 长度(最后一跳)，使用 clamp 保护
-        actual_end = torch.min(torch.tensor(float(wav.shape[-1]), device=device), end_samples.float()).long()
+        start_samples = conv_history.shape[-1] * self.samples_per_frame
+        actual_end = torch.min(torch.tensor(float(wav.shape[-1]), device=device), 
+                             (start_samples + num_finalize * self.samples_per_frame).float()).long()
         final_wav = wav[:, start_samples : actual_end]
         
-        # 8. 更新下一次的卷积历史 (始终保留最后 4 帧)
-        # 即使 num_finalize 很大，最后的 finalize_hidden 部分切片依然正确
         finalize_hidden = accumulated[:, :, :num_finalize]
         next_conv_hist = finalize_hidden[:, :, -self.CONV_HISTORY_WINDOW:]
         
-        # 9. 展平 KV 列表作为返回值
-        next_pkv_flat = []
-        for i in range(self.num_layers):
-            ki, vi = pkv[i]
-            next_pkv_flat.append(ki)
-            next_pkv_flat.append(vi)
-            
-        return (final_wav, next_pre_conv_hist, next_latent_buf, next_conv_hist) + tuple(next_pkv_flat)
+        return (final_wav, next_pre_conv_hist, next_latent_buf, next_conv_hist) + \
+               tuple(kv_stack.key_cache) + tuple(kv_stack.value_cache)
 
 class SpeakerEncoderExportWrapper(nn.Module):
     """
