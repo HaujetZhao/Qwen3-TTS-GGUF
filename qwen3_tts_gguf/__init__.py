@@ -46,7 +46,9 @@ if not logger.handlers:
 
     logger.info(f"日志系统初始化完成。日志文件: {log_file_path}")
 
-# 导出 logger 和核心模块
+# 导出核心模块
 from .llama import init_llama_lib
+from .engine import TTSEngine
+from .result import SynthesisResult
 
-__all__ = ['logger', 'init_llama_lib']
+__all__ = ['logger', 'init_llama_lib', 'TTSEngine', 'SynthesisResult']
