@@ -190,6 +190,8 @@ class StatefulCodecExportWrapper(nn.Module):
     PRE_CONV_HISTORY_WINDOW = 2
     # 后端卷积链历史，测试发现 4 帧即可满足状态恢复
     CONV_HISTORY_WINDOW = 4
+    # KV Cache 滑动窗口 (根据模型 config.sliding_window 设置)
+    KV_CACHE_WINDOW_SIZE = 72
     # ===============================================
 
     def __init__(self, model: Qwen3TTSTokenizerV2Model):
@@ -236,6 +238,10 @@ class StatefulCodecExportWrapper(nn.Module):
         )
         new_hidden = outputs.last_hidden_state.transpose(1, 2) # [B, Hidden, N]
         next_pkv = outputs.past_key_values
+        
+        # KV Cache 滑动窗口裁剪 (极简实现)
+        if next_pkv is not None:
+            next_pkv.crop(self.KV_CACHE_WINDOW_SIZE)
         
         # 3. 维护 Latent Buffer (物理延迟对齐)
         if latent_buffer is None:
