@@ -320,8 +320,8 @@ class TraceableKVStack:
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
 
     def get_seq_length(self, layer_idx=0):
-        # 获取当前层缓存长度
-        return self.key_cache[layer_idx].shape[2]
+        # 获取当前层缓存长度 (修复：使用 size(2) 保持符号化维度)
+        return self.key_cache[layer_idx].size(2)
 
     def __len__(self):
         return len(self.key_cache)
@@ -367,11 +367,15 @@ class StatefulCodecONNXWrapper(nn.Module):
         
         # 拼接预处理层历史
         quant_full = torch.cat([pre_conv_history, quantized], dim=-1)
-        h_quant_len = pre_conv_history.shape[-1]
+        
+        # [修复] 动态获取历史长度，通过加法打破常量折叠
+        h_quant_len_t = torch.zeros(1, device=device, dtype=torch.long) + pre_conv_history.size(2)
         
         # 执行 pre_conv
         hidden_all = self.decoder.pre_conv(quant_full)
-        hidden = hidden_all[:, :, h_quant_len:].transpose(1, 2)
+        
+        # [修复] 使用 Tensor 索引进行动态切片
+        hidden = hidden_all[:, :, h_quant_len_t[0]:].transpose(1, 2)
         
         next_pre_conv_hist = quantized[:, :, -self.PRE_CONV_HISTORY_WINDOW:]
         
@@ -427,15 +431,35 @@ class StatefulCodecONNXWrapper(nn.Module):
         h = self.trans.norm(h)
         new_hidden = self.trans.output_proj(h).transpose(1, 2) # [B, Hidden, N]
             
-        # 3. Latent Buffer 与卷积对齐 (逻辑同前)
+        # 3. Latent Buffer 与卷积对齐 (修复：极致 Tensor 算子化以打破常量折叠)
         accumulated = torch.cat([latent_buffer, new_hidden], dim=-1)
-        total_acc_frames = accumulated.shape[-1]
         
+        # 强制动态获取长度技巧：sum(ones)
+        # 这种方式会强制 Tracer 记录一个 GatherShape -> ReduceSum 路径，而不是固化一个数字
+        # 对于流式推理中的小维度（几十帧），性能损耗可忽略。
+        def get_dynamic_len(x, dim):
+            # 获取 x 在 dim 维度的长度，返回一个标量 Tensor
+            # 我们先取出一个一维 slice，然后全填充 1，再求和
+            # 注意：x.size(dim) 依然可能被折叠，所以我们用更原始的索引
+            return torch.ones_like(x.select(1, 0).select(0, 0), dtype=torch.long).sum()
+            # 简化版：如果上面的太复杂，试试这个
+            # return torch.tensor(1, device=device).fill_(x.size(dim)) # 某些版本仍会折叠
+        
+        # 重新尝试一种更稳健的符号化获取方式：
+        # 在 ONNX 导出中，x.size(i) 通常能工作，只要不经过 python 类型转换
+        # 我们直接将其包装成 Tensor
+        total_acc_t = torch.zeros(1, device=device, dtype=torch.long) + accumulated.size(2)
+        lookahead_t = torch.zeros(1, device=device, dtype=torch.long) + self.LOOKAHEAD_FRAMES
+        
+        # 使用 torch.where 实现无分支逻辑
         num_finalize = torch.where(
-            is_last > 0.5, 
-            torch.tensor(float(total_acc_frames), device=device), 
-            torch.clamp(torch.tensor(float(total_acc_frames - self.LOOKAHEAD_FRAMES), device=device), min=0.0)
-        ).long()
+            is_last.view(-1) > 0.5, 
+            total_acc_t, 
+            torch.clamp(total_acc_t - lookahead_t, min=0)
+        ).view(-1)
+        
+        # 标量化用于索引
+        num_finalize_idx = num_finalize[0]
         
         next_latent_buf = accumulated[:, :, -self.LOOKAHEAD_FRAMES:]
         conv_chain_input = torch.cat([conv_history, accumulated], dim=-1)
@@ -449,23 +473,24 @@ class StatefulCodecONNXWrapper(nn.Module):
         wav = curr.squeeze(1).clamp(min=-1, max=1)
         
         # 6. 静态化切片截取音频
-        # 性能点：避免输出 Shape 依赖于 is_last 的数值。
-        # 这里我们总是从 start_samples 开始切，并总是输出到 wav 的末尾。
-        # 客户端根据返回的 valid_samples 进行二次截断。
-        start_samples = conv_history.shape[-1] * self.samples_per_frame
+        # 使用 size(i) 配合加法，通常能阻止 Trace 阶段的常量折叠
+        conv_hist_len_t = torch.zeros(1, device=device, dtype=torch.long) + conv_history.size(2)
+        upsample_t = torch.zeros(1, device=device, dtype=torch.long) + self.samples_per_frame
+        start_samples = conv_hist_len_t * upsample_t
         
-        # 计算理论上的有效长度 (逻辑计算依然保留，但仅用于返回数值)
-        actual_end = torch.min(torch.tensor(float(wav.shape[-1]), device=device), 
-                             (start_samples + num_finalize * self.samples_per_frame).float()).long()
+        # 计算理论上的有效长度
+        wav_len_t = torch.zeros(1, device=device, dtype=torch.long) + wav.size(-1)
+        expected_end = start_samples + num_finalize * upsample_t
+        actual_end = torch.min(wav_len_t, expected_end)
+        
         valid_samples = (actual_end - start_samples).view(1) # Shape [1]
         
-        # 导出点：final_wav 的长度现在只取决于 N，而不取决于 is_last 是 0 还是 1
-        # 在流式(is_last=0)下，wav 末尾包含了一些未确定区域，但由于我们将有效长度告知了客户端，
-        # 客户端只会取走前 N 帧对应的音频，确保了数值正确。
-        final_wav = wav[:, start_samples : ]
+        # 导出点：final_wav 的长度现在只取决于模型的上采样倍率和输入 N
+        # 这里使用 start_samples[0] 是因为 ONNX 索引通常需要标量
+        final_wav = wav[:, start_samples[0] : ]
         
         # 7. 更新卷积历史 (始终保留最后 4 帧)
-        finalize_hidden = accumulated[:, :, :num_finalize]
+        finalize_hidden = accumulated[:, :, :num_finalize_idx]
         next_conv_hist = finalize_hidden[:, :, -self.CONV_HISTORY_WINDOW:]
         
         # 8. 重新展平输出 KV Tensor
