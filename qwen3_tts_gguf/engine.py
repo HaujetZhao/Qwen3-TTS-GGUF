@@ -46,6 +46,8 @@ class TTSEngine:
         self.encoder = None
         if os.path.exists(self.paths["codec_enc_onnx"]) and os.path.exists(self.paths["spk_enc_onnx"]):
             self.encoder = EncoderPredictor(self.paths["codec_enc_onnx"], self.paths["spk_enc_onnx"], use_dml=False)
+        else:
+            logger.info("ℹ️ [Engine] 未找到编码器模型，音色克隆功能将不可用。")
             
         logger.info(f"✅ [Engine] 引擎已就绪 (Mouth: {self.mouth.active_provider})")
 

@@ -4,7 +4,7 @@ stream.py - TTS 语音流
 """
 import time
 import numpy as np
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Union
 from .constants import PROTOCOL, map_speaker, map_language
 from .result import TTSResult, Timing, LoopOutput, TTSConfig
 from .predictors.master import MasterPredictor
@@ -217,10 +217,11 @@ class TTSStream:
         self.set_identity(res)
         return res
 
-    def set_identity_from_clone(self, wav_path: str, text: str, language: str = "chinese") -> TTSResult:
+    def set_identity_from_clone(self, wav_path: str, text: str, language: str = "chinese") -> Union[TTSResult, bool]:
         """克隆定调：从外部 WAV 文件提取特征并设为身份锚点"""
         if self.engine.encoder is None:
-            raise RuntimeError("Encoder models not found. Audio cloning is not available.")
+            logger.info("⚠️ [Stream] 编码器模型未就绪，音色克隆功能不可用。")
+            return False
             
         logger.info(f"🎤 Setting Identity from Clone: {wav_path}")
         

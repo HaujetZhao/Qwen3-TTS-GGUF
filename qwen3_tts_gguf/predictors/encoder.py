@@ -34,29 +34,29 @@ class EncoderPredictor:
         参数: 24kHz, n_fft=1024, hop=256, n_mels=128, fmin=0, fmax=12000
         """
         # 1. 计算 Slaney-style Mel Filterbank
-        # librosa.filters.mel 默认使用 slaney norm
         mel_basis = librosa.filters.mel(
             sr=24000, n_fft=1024, n_mels=128, fmin=0.0, fmax=12000.0
         )
         
-        # 2. STFT 预处理 (Reflect Padding 对齐 center=True)
-        # librosa.stft 默认使用 center=True 和 reflect padding
+        # 2. 手动 Padding (对齐官方: (n_fft - hop_size) // 2 = 384)
+        padding = (1024 - 256) // 2
+        wav_padded = np.pad(wav, (padding, padding), mode='reflect')
+        
+        # 3. STFT (禁用 center 自动 Padding)
         stft = librosa.stft(
-            wav, n_fft=1024, hop_length=256, win_length=1024, 
-            window='hann', center=True, pad_mode='reflect'
+            wav_padded, n_fft=1024, hop_length=256, win_length=1024, 
+            window='hann', center=False
         )
         
-        # 3. 计算幅度并叠加 1e-9 防止数值溢出
+        # 4. 计算幅度并叠加 1e-9 防止数值溢出
         magnitudes = np.sqrt(np.abs(stft)**2 + 1e-9)
         
-        # 4. Mel 映射
+        # 5. Mel 映射
         mel_spec = np.dot(mel_basis, magnitudes)
         
-        # 5. 动态范围压缩 (官方使用 ln 而非 dB)
-        # log(clamp(x, min=1e-5))
+        # 6. 动态范围压缩
         log_mel = np.log(np.maximum(mel_spec, 1e-5))
         
-        # 返回转置后的结果 [T, 128]
         return log_mel.T
 
     def encode(self, wav_path: str) -> tuple[np.ndarray, np.ndarray]:
