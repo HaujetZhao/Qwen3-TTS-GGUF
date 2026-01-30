@@ -4,10 +4,10 @@
 import os
 import sys
 import time
-from qwen3_tts_gguf.engine import TTSEngine
-from qwen3_tts_gguf.result import TTSConfig
-
 def test_streaming():
+    from qwen3_tts_gguf.engine import TTSEngine
+    from qwen3_tts_gguf.result import TTSConfig
+
     print("\n" + "="*50)
     print("🧪 测试: 多进程流式发声架构")
     print("="*50)
