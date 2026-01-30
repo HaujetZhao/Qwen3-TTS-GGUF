@@ -75,6 +75,9 @@ class TTSStream:
 
         cfg = config or TTSConfig()
         
+        # 0. 准备工作：清空推理记忆（确保每轮合成状态独立）
+        self.master.clear_memory()
+        
         # 1. 准备文本 Prompt 数据
         pdata, timing = self._build_prompt_data(text, language, is_clone=cfg.voice_clone_mode)
         

@@ -98,6 +98,8 @@ def decoder_worker_proc(codes_queue, pcm_queue, mouth_onnx_path, record_queue=No
                     if msg_type == "DECODE":
                         pcm_queue.put(("AUDIO", task_id, None, 0))
 
+    except KeyboardInterrupt:
+        pass # 静默退出
     except Exception as e:
         print(f"  ❌ [MouthWorker] 崩溃: {e}")
         import traceback
@@ -151,5 +153,7 @@ def speaker_worker_proc(pcm_queue, result_queue=None, sample_rate=24000):
                 # 虽然回调已经在读，但我们通过一个标记来判断是否该退出
                 if state.get("stop"):
                     break
+    except KeyboardInterrupt:
+        pass # 静默退出
     except Exception as e:
         print(f"  ❌ [SpeakerWorker] 异常: {e}")
