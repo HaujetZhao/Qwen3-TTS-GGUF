@@ -52,7 +52,7 @@ class TTSConfig:
     sub_top_p: float = 1.0
     sub_top_k: int = 50
     
-    max_steps: int = 600
+    max_steps: int = 300
     voice_clone_mode: bool = True
     
     # 流式发声控制

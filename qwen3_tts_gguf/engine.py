@@ -19,7 +19,7 @@ class TTSEngine:
     def __init__(self, model_dir="model", tokenizer_path="Qwen3-TTS-12Hz-1.7B-CustomVoice", verbose=True):
         import time
         import numpy as np
-        from transformers import AutoTokenizer
+        from tokenizers import Tokenizer
         
         t_start = time.time()
         self.project_root = os.getcwd()
@@ -38,7 +38,13 @@ class TTSEngine:
         # 1. 资产加载
         t1 = time.time()
         self.assets = AssetsManager(self.model_dir)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path, trust_remote_code=True, fix_mistral_regex=True)
+        
+        # 使用轻量级 tokenizers 库加载
+        json_path = os.path.join(self.tokenizer_path, "tokenizer.json")
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"未找到轻量级分词文件: {json_path}。请先运行 96-Convert-Tokenizer.py 转换。")
+            
+        self.tokenizer = Tokenizer.from_file(json_path)
         if verbose: print(f"📦 [Engine] 资产与词表加载完成 (耗时: {time.time()-t1:.2f}s)")
         
         # 2. 模型引擎初始化

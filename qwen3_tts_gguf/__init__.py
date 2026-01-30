@@ -46,17 +46,9 @@ if not logger.handlers:
 
     logger.info(f"日志系统初始化完成。日志文件: {log_file_path}")
 
-# 4. 导出核心模块 (改为按需加载或保持轻量)
+# 4. 导出核心模块
 from .llama import init_llama_lib
-
-# 为避免子进程 (Workers) 重复加载 transformers 等重型库，使用延迟加载
-def __getattr__(name):
-    if name == "TTSEngine":
-        from .engine import TTSEngine
-        return TTSEngine
-    if name == "TTSResult":
-        from .result import TTSResult
-        return TTSResult
-    raise AttributeError(f"module {__name__} has no attribute {name}")
+from .engine import TTSEngine
+from .result import TTSResult
 
 __all__ = ['logger', 'init_llama_lib', 'TTSEngine', 'TTSResult']

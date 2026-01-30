@@ -27,7 +27,7 @@ class PromptBuilder:
         构建原生生成模式的 Prompt (Header + Text)
         """
         t_start = time.time()
-        ids = tokenizer.encode(text, add_special_tokens=False)
+        ids = tokenizer.encode(text).ids
         p = PROTOCOL
         
         # 1. 构造 Token 序列
@@ -91,7 +91,7 @@ class PromptBuilder:
                 reconstructed.append(frame_vec)
             anchor.summed_embeds = reconstructed
             
-        ids = tokenizer.encode(text, add_special_tokens=False)
+        ids = tokenizer.encode(text).ids
         p = PROTOCOL
         
         # 1. Header 部分
