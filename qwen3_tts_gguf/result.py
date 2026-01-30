@@ -64,6 +64,7 @@ class TTSResult:
     text_ids: List[int]                     # 文本 Token IDs
     codes: np.ndarray                       # 音频 Codec IDs (T, 16)
     summed_embeds: Optional[List[np.ndarray]] = None # 音频叠加特征 (T, 2048) - 可选
+    info: str = ""                          # 备注信息 (如音色描述)
     
     # 产出附件 (可选)
     audio: Optional[np.ndarray] = None      # 音频波形 (PCM float32)
@@ -109,14 +110,18 @@ class TTSResult:
 
     # --- 持久化能力 ---
 
-    def save_json(self, path: str, include_audio: bool = False, include_embeds: bool = False, light: bool = False):
+    def save_json(self, path: str, include_audio: bool = False, include_embeds: bool = False, light: bool = False, info: Optional[str] = None):
         """将特征锚点保存到 JSON"""
+        if info is not None:
+            self.info = info
+            
         if not self.is_valid_anchor:
             logger.warning("⚠️ Result is incomplete, cannot save as anchor.")
             return
         
         data = {
             "text": self.text,
+            "info": self.info,
             "text_ids": self.text_ids,
             "codes": self.codes.tolist(),
             "spk_emb": self.spk_emb.tolist(),
@@ -145,6 +150,7 @@ class TTSResult:
             
         res = cls(
             text=data.get("text", ""),
+            info=data.get("info", ""),
             text_ids=data["text_ids"],
             spk_emb=np.array(data["spk_emb"], dtype=np.float32),
             codes=np.array(data["codes"], dtype=np.int64),
