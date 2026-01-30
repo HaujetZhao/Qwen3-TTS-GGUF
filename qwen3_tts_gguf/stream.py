@@ -52,54 +52,85 @@ class TTSStream:
         self.m_batch = llama.llama_batch_init(self.n_ctx, 2048, 1)
         self.c_batch = llama.llama_batch_init(32, 1024, 1)
 
-    def tts(self, 
-            text: str, 
-            language: str = "chinese",
-            config: Optional[TTSConfig] = None,
-            verbose: bool = True) -> TTSResult:
+    # =========================================================================
+    # 核心推理 API (Adapt to Base / CustomVoice / VoiceDesign)
+    # =========================================================================
+
+    def clone(self, 
+              text: str, 
+              language: str = "chinese",
+              config: Optional[TTSConfig] = None,
+              verbose: bool = True) -> TTSResult:
         """
-        同步合成接口。
+        [克隆模式] 对应 Base 模型能力。
+        基于已设定的音色锚点（通过 set_voice 设定）合成新文本。
         """
-        # 0. 检查 Voice 是否已设置
         if self.voice is None:
-            msg = (
-                "\n❌ Voice is not set! 你必须先设置音色才能进行合成。\n"
-                "你可以尝试以下方法之一：\n"
-                "  1. stream.set_voice_from_speaker('vivian')  <- 使用内置音色\n"
-                "  2. stream.set_voice_from_clone('path.wav')  <- 从外部音频克隆\n"
-                "  3. stream.set_voice_from_json('path.json')  <- 载入持久化音色\n"
-                "  4. engine.create_stream(voice_path='...')   <- 在创建流时指定"
-            )
-            logger.error(msg)
-            raise RuntimeError("Voice not set. Please follow the instructions in the log.")
-
-        cfg = config or TTSConfig()
-        
-        # 0. 准备工作：清空推理记忆（确保每轮合成状态独立）
-        self.master.clear_memory()
-        
-        # 1. 准备文本 Prompt 数据
-        pdata, timing = self._build_prompt_data(text, language, is_clone=cfg.voice_clone_mode)
-        
-        # 2. 运行推理循环 (内置流式支持)
-        lout = self._run_engine_loop(pdata, timing, cfg, verbose=verbose)
-        
-        # 3. 后处理：生成波形并封装结果
-        return self._post_process(text, pdata, lout, cfg=cfg)
-
-    def _build_prompt_data(self, text: str, language: str, is_clone: bool, speaker_id: Optional[str] = None) -> Tuple[PromptData, Timing]:
-        """准备 Prompt 并初始化 Timing 对象"""
-        lang_id = map_language(language)
-        
-        if is_clone:
-            pdata = PromptBuilder.build_clone_prompt(text, self.voice, self.tokenizer, self.assets, lang_id)
-        else:
-            spk_id = map_speaker(speaker_id)
-            pdata = PromptBuilder.build_native_prompt(text, self.tokenizer, self.assets, lang_id, spk_id)
+            raise RuntimeError("⚠️ 请先调用 set_voice() 设定音色锚点，才能进行 clone。")
             
+        cfg = config or TTSConfig()
+        self.master.clear_memory() # 确保记忆纯净
+        
+        # 克隆模式入口
+        lang_id = map_language(language)
+        pdata = PromptBuilder.build_clone_prompt(text, self.tokenizer, self.assets, self.voice, lang_id)
+        
         timing = Timing()
         timing.prompt_time = pdata.compile_time
-        return pdata, timing
+        
+        lout = self._run_engine_loop(pdata, timing, cfg, verbose=verbose)
+        return self._post_process(text, pdata, lout, cfg=cfg)
+
+    def custom(self,
+               text: str,
+               speaker: str,
+               language: str = "chinese",
+               instruct: Optional[str] = None,
+               config: Optional[TTSConfig] = None,
+               verbose: bool = True) -> TTSResult:
+        """
+        [精品音色模式] 对应 CustomVoice 模型能力。
+        """
+        cfg = config or TTSConfig()
+        self.master.clear_memory()
+        
+        # 精品音色入口
+        spk_id = map_speaker(speaker)
+        lang_id = map_language(language) if language.lower() != "auto" else None
+        pdata = PromptBuilder.build_custom_prompt(text, self.tokenizer, self.assets, spk_id, lang_id, instruct)
+        
+        timing = Timing()
+        timing.prompt_time = pdata.compile_time
+        
+        lout = self._run_engine_loop(pdata, timing, cfg, verbose=verbose)
+        return self._post_process(text, pdata, lout, cfg=cfg)
+
+    def design(self,
+               text: str,
+               instruct: str,
+               language: str = "chinese",
+               config: Optional[TTSConfig] = None,
+               verbose: bool = True) -> TTSResult:
+        """
+        [音色设计模式] 对应 VoiceDesign 模型能力。
+        """
+        cfg = config or TTSConfig()
+        self.master.clear_memory()
+        
+        # 设计模式入口
+        lang_id = map_language(language) if language.lower() != "auto" else None
+        pdata = PromptBuilder.build_design_prompt(text, self.tokenizer, self.assets, instruct, lang_id)
+        
+        timing = Timing()
+        timing.prompt_time = pdata.compile_time
+        
+        lout = self._run_engine_loop(pdata, timing, cfg, verbose=verbose)
+        return self._post_process(text, pdata, lout, cfg=cfg)
+
+    def tts(self, *args, **kwargs):
+        """兼容性包装：现默认指向 clone 逻辑"""
+        return self.clone(*args, **kwargs)
+
 
     def _run_engine_loop(self, pdata: PromptData, timing: Timing, cfg: TTSConfig, verbose: bool = False) -> LoopOutput:
         """核心推理循环：支持生成全量 Codes 并可选进行流式推送"""
@@ -242,59 +273,71 @@ class TTSStream:
     def __del__(self):
         self.shutdown()
 
-    def set_voice(self, res: TTSResult):
+    # =========================================================================
+    # 音色设置 API (Voice Management)
+    # =========================================================================
+
+    def set_voice(self, source: Union[TTSResult, str], text: Optional[str] = None):
         """
-        命令式设置：直接将一个 TTSResult 设为当前流的音色锚点。
+        统一设置当前流的音色锚点。
+        参数：
+          - source: TTSResult 对象，或 .json 路径，或 .wav 路径
+          - text: 如果 source 为音频路径，需提供对应的参考文本（用于 ICL 引导）
         """
+        if isinstance(source, TTSResult):
+            self._set_voice_from_result(source)
+        elif isinstance(source, str):
+            low_source = source.lower()
+            if low_source.endswith(".json"):
+                self._set_voice_from_json(source)
+            elif low_source.endswith((".wav", ".mp3", ".flac")):
+                if text is None:
+                    logger.warning("📍 设置克隆音色时建议提供参考文本 (text)，否则可能导致合成效果不稳定。")
+                self._set_voice_from_wav(source, text or "")
+            else:
+                # 尝试当作内置说话人名称处理 (生成一小段作为锚点)
+                self.set_voice_from_speaker(source, text or "你好")
+        else:
+            raise TypeError(f"Unsupported voice source type: {type(source)}")
+
+    def _set_voice_from_result(self, res: TTSResult):
+        """命令式设置：直接将一个 TTSResult 设为当前流的音色锚点。"""
         if not res.is_valid_anchor:
             raise ValueError("Provided TTSResult is not a valid anchor.")
         self.voice = res
         logger.info(f"🎭 Voice switched to: {res.text[:20]}...")
 
-    def set_voice_from_speaker(self, speaker_id: str, text: str, language: str = "chinese", config: Optional[TTSConfig] = None, verbose: bool = False) -> TTSResult:
-        """从指定内置说话人生成一个音色锚点结果"""
-        logger.info(f"📍 Setting Voice from Speaker: {speaker_id}, language: {language}")
-        
-        cfg = config or TTSConfig()
-        # 强制清空记忆以确保音色纯净
-        self.master.clear_memory()
-        
-        # 1. 编译 Prompt
-        pdata, timing = self._build_prompt_data(text, language, is_clone=False, speaker_id=speaker_id)
-        
-        # 2. 推理循环 (传入 verbose 即可支持流式回显)
-        lout = self._run_engine_loop(pdata, timing, cfg, verbose=verbose)
-        
-        # 3. 结果生成并设为当前音色
-        res = self._post_process(text, pdata, lout)
-        self.set_voice(res)
-        return res
+    def _set_voice_from_json(self, path: str):
+        """从 JSON 文件恢复音色锚点"""
+        res = TTSResult.from_json(path)
+        self._set_voice_from_result(res)
 
-    def set_voice_from_clone(self, wav_path: str, text: str, language: str = "chinese") -> Union[TTSResult, bool]:
-        """克隆音色：从外部 WAV 文件提取特征并设为音色锚点"""
+    def _set_voice_from_wav(self, wav_path: str, text: str):
+        """克隆音色：从外部文件提取特征并设为音色锚点"""
         if self.engine.encoder is None:
-            logger.info("⚠️ [Stream] 编码器模型未就绪，音色克隆功能不可用。")
-            return False
+            raise RuntimeError("⚠️ 编码器模块未加载，无法执行音色克隆。")
             
-        logger.info(f"🎤 Setting Voice from Clone: {wav_path}")
-        
-        # 1. 提取特征
+        logger.info(f"🎤 Extracting features from: {wav_path}")
         codes, spk_emb = self.engine.encoder.encode(wav_path)
         
-        # 2. 构造 TTSResult 作为锚点
-        res = TTSResult(
-            text=text,
-            text_ids=[], 
-            spk_emb=spk_emb,
-            codes=codes
-        )
-        
-        # 3. 设置为当前音色
-        self.set_voice(res)
-        return res
+        res = TTSResult(text=text, text_ids=self.tokenizer.encode(text).ids, spk_emb=spk_emb, codes=codes)
+        self._set_voice_from_result(res)
 
-    def set_voice_from_json(self, path: str):
-        """从 JSON 文件恢复音色锚点并设为当前音色"""
-        res = TTSResult.from_json(path)
-        self.set_voice(res)
+    def set_voice_from_speaker(self, speaker_id: str, text: str, language: str = "chinese", config: Optional[TTSConfig] = None, verbose: bool = False) -> TTSResult:
+        """从指定内置说话人生成一个音色锚点并激活 (支持流式预览)"""
+        logger.info(f"📍 Initializing Voice from Speaker: {speaker_id}")
+        
+        cfg = config or TTSConfig()
+        self.master.clear_memory()
+        
+        lang_id = map_language(language)
+        spk_id = map_speaker(speaker_id)
+        pdata = PromptBuilder.build_custom_prompt(text, self.tokenizer, self.assets, spk_id, lang_id)
+        
+        timing = Timing()
+        timing.prompt_time = pdata.compile_time
+        
+        lout = self._run_engine_loop(pdata, timing, cfg, verbose=verbose)
+        res = self._post_process(text, pdata, lout)
+        self._set_voice_from_result(res)
         return res

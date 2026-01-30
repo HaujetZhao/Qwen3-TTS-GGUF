@@ -1,5 +1,5 @@
 """
-105-Interactive-Wait-TTS.py - 交互式“全转完再播”终端 (增强指令版)
+105-Interactive-Wait-TTS.py - 交互式“全转完再播”终端 (API 重构版)
 """
 import os
 import sys
@@ -13,114 +13,90 @@ from qwen3_tts_gguf.result import TTSConfig
 from qwen3_tts_gguf.constants import SPEAKER_MAP, LANGUAGE_MAP
 
 def print_help():
-    print("\n" + "-"*40)
-    print("🛠️  可用指令系统 (非流式模式):")
-    print("  /speakers          查看内置人名列表")
-    print("  /languages         查看支持语言列表")
+    print("\n" + "="*50)
+    print("🛠️  Qwen3-TTS 等待模式指令:")
+    print("  /speakers          列出所有内置说话人")
+    print("  /languages         列出支持的语言")
     print("  /voice <人名> <语言> <文本>")
-    print("                     即时合成并激活新音色锚点")
-    print("  /load <路径>       加载 JSON 存档")
-    print("  /save <路径>       保存当前音色锚点")
-    print("-" * 10)
-    print("  /info              配置预览")
-    print("  /temp <值>         采样温度控制")
-    print("  /steps <值>        最大生成步数控制")
-    print("  /reset             重置推理记忆")
-    print("  /help              显示帮助")
-    print("-" * 40)
+    print("                     合成并【设定】当前音色 (等待完成后播放)")
+    print("  /load <路径>       从 JSON 存档载入音色")
+    print("  /save <路径>       保存当前音色")
+    print("-" * 15)
+    print("  /info              查看当前状态")
+    print("  /reset             重置状态")
+    print("  /q, /exit          退出程序")
+    print("="*50)
 
-def interactive_wait_session():
-    print("\n" + "="*60)
-    print("🎤 Qwen3-TTS 交互式终端 (非流式：全转完再放)")
-    print("="*60)
-
-    # 1. 引擎初始化
-    engine = TTSEngine(verbose=True)
+def interactive_session():
+    print("\n🚀 正在启动 Qwen3-TTS 交互式终端 (等待模式)...")
     
-    # 2. 默认音色
-    JSON_PATH = "output/vivian.json"
-    if os.path.exists(JSON_PATH):
-        print(f"\n✅ 自动加载默认音色: {JSON_PATH}")
-        stream = engine.create_stream(voice_path=JSON_PATH)
-    else:
-        stream = engine.create_stream()
-        print(f"\nℹ️ 暂无初始音色，您可以输入普通文字合成，或通过指令设定。")
+    engine = TTSEngine(verbose=False)
+    stream = engine.create_stream()
 
-    # 3. 非流式配置
-    cfg = TTSConfig(stream_play=False, max_steps=300)
+    # 非流式配置: stream_play = False
+    cfg = TTSConfig(stream_play=False, max_steps=400)
 
     print_help()
 
     try:
         while True:
-            raw_input = input("\n👉 请输入文本或指令: ").strip()
+            raw_input = input("\n[WaitMode] >>> ").strip()
+            if not raw_input: continue
             
-            if not raw_input:
-                continue
-
-            # --- 指令处理 ---
             if raw_input.startswith('/'):
-                parts = raw_input.split(maxsplit=3)
+                parts = raw_input.split(maxsplit=4)
                 cmd = parts[0].lower()
                 
-                if cmd == '/help':
-                    print_help()
+                if cmd == '/help': print_help()
                 elif cmd == '/info':
-                    print("\n[当前状态]")
-                    print(f"  - 采样温度: {cfg.temperature}")
-                    print(f"  - 步数上限: {cfg.max_steps}")
-                    print(f"  - 当前音色: {stream.voice.info if stream.voice else '未设置'}")
+                    print(f"\n[状态] 温度: {cfg.temperature} | 步数限制: {cfg.max_steps}")
+                    print(f"[音色] {stream.voice.info if stream.voice else '未设定'}")
                 elif cmd == '/speakers':
-                    print("\n🎙️ 可用说话人:")
-                    for name in SPEAKER_MAP.keys(): print(f"  - {name}")
+                    print("\n🎙️ 内置说话人: " + ", ".join(sorted(SPEAKER_MAP.keys())))
                 elif cmd == '/languages':
-                    print("\n🌏 支持语言:")
-                    for lang in LANGUAGE_MAP.keys(): print(f"  - {lang}")
-                elif cmd == '/voice' and len(parts) >= 4:
-                    spk, lang, v_text = parts[1], parts[2], parts[3]
-                    print(f"⌛ 正在生成音色锚点...")
-                    stream.set_voice_from_speaker(spk, v_text, language=lang, config=cfg, verbose=True)
-                    print(f"✅ 音色已激活。")
-                elif cmd == '/load' and len(parts) > 1:
-                    stream.set_voice_from_json(parts[1])
-                    print(f"✅ 已载入存档。")
+                    print("\n🌏 支持语言: " + ", ".join(sorted(LANGUAGE_MAP.keys())))
+                elif cmd == '/voice':
+                    if len(parts) < 4:
+                        print("❌ 用法: /voice <人名> <语言> <文本>"); continue
+                    print(f"🎬 正在建立音色锚点 [{parts[1]}]...")
+                    stream.set_voice(parts[1], text=parts[3])
+                    print(f"✅ 音色已锁定。")
+                elif cmd == '/load':
+                    if len(parts) < 2: print("❌ 用法: /load <路径>"); continue
+                    stream.set_voice(parts[1])
+                    print(f"✅ 已载入音色。")
                 elif cmd == '/save':
-                    p = parts[1] if len(parts) > 1 else f"output/voice_{int(time.time())}.json"
-                    stream.voice.save_json(p)
-                    print(f"✅ 已保存至: {p}")
-                elif cmd == '/temp' and len(parts) > 1:
-                    cfg.temperature = float(parts[1])
-                    print(f"✅ 温度设为: {cfg.temperature}")
-                elif cmd == '/steps' and len(parts) > 1:
-                    cfg.max_steps = int(parts[1])
+                    save_path = parts[1] if len(parts) > 1 else f"output/voice_{int(time.time())}.json"
+                    if stream.voice:
+                        stream.voice.save_json(save_path)
+                        print(f"✅ 已保存至: {save_path}")
+                    else: print("❌ 无有效音色。")
                 elif cmd == '/reset':
-                    stream.master.clear_memory()
-                    print("✅ 已重置。")
-                elif cmd in ['/exit', '/q']:
-                    break
-                else:
-                    print(f"❓ 未知或参数不足: {cmd}")
+                    stream.reset()
+                    print("🧹 已重置。")
+                elif cmd in ['/q', '/exit']: break
                 continue
 
-            # --- 文本合成处理 ---
-            if raw_input.lower() in ['exit', 'q', 'quit', '退出']:
-                break
-            
-            print(f"⏳ 正在计算推理...")
-            res = stream.tts(raw_input, config=cfg, verbose=False)
-            res.print_stats()
-            print("🔊 正在播放...")
-            res.play()
-            
-    except KeyboardInterrupt:
-        print("\n\n🛑 正在退出...")
-    except Exception as e:
-        print(f"\n❌ 错误: {e}")
-    finally:
-        print("⏳ 回收资源...")
-        try: engine.shutdown()
-        except: pass
-        print("✅ 退出完毕。")
+            try:
+                print("⏳ 正在全力推理并渲染...")
+                t_0 = time.time()
+                res = stream.clone(raw_input, config=cfg, verbose=False)
+                
+                print(f"\n✅ 合成完成！耗时: {time.time()-t_0:.2f}s")
+                print(f"📊 性能分析:")
+                print(f"   - 语音时长: {res.duration:.2f}s")
+                print(f"   - 采样速度: {res.stats.steps_per_sec:.2f} step/s")
+                print(f"   - 实时率 (RTF): {res.rtf:.2f} (越小越快)")
+                
+                print("🔊 正在播放...")
+                stream.play_audio(res.audio)
+            except RuntimeError as e:
+                print(f"💡 提示: {e}")
+                print("   建议先使用 /voice 指令设定一个音色。")
+
+    except KeyboardInterrupt: print("\n👋 退出。")
+    except Exception as e: print(f"\n⚠️ 错误: {e}")
+    finally: engine.shutdown()
 
 if __name__ == "__main__":
-    interactive_wait_session()
+    interactive_session()
