@@ -6,7 +6,7 @@ import time
 import numpy as np
 from typing import Optional, List, Tuple
 from .constants import PROTOCOL, map_speaker, map_language
-from .result import TTSResult, Timing, LoopOutput, GenConfig
+from .result import TTSResult, Timing, LoopOutput, TTSConfig
 from .predictors.master import MasterPredictor
 from .predictors.craftsman import CraftsmanPredictor
 
@@ -52,16 +52,14 @@ class TTSStream:
     def tts(self, 
             text: str, 
             language: str = "chinese",
-            play: bool = False, 
-            save_path: Optional[str] = None,
-            config: Optional[GenConfig] = None) -> TTSResult:
+            config: Optional[TTSConfig] = None) -> TTSResult:
         """
         同步合成接口（要求 Identity 已设置）。
         """
         if self.identity is None:
             raise RuntimeError("Identity is not set. Please call `set_identity` first.")
 
-        cfg = config or GenConfig()
+        cfg = config or TTSConfig()
 
         # 1. 构建 Prompt (由 PromptBuilder 统计耗时)
         pdata, timing = self._build_prompt_data(text, language, is_clone=True)
@@ -71,10 +69,6 @@ class TTSStream:
 
         # 3. 后处理 (渲染与封装)
         res = self._post_process(text, pdata, lout)
-
-        # 4. 副作用执行 (直接调用结果对象的 IO 方法)
-        if save_path: res.save_wav(save_path)
-        if play: res.play()
         
         return res
 
@@ -194,11 +188,11 @@ class TTSStream:
         self.identity = res
         logger.info(f"🔒 Identity locked to text: '{res.text}'")
 
-    def set_identity_from_speaker(self, speaker_id: str, text: str, language: str = "chinese", config: Optional[GenConfig] = None) -> TTSResult:
+    def set_identity_from_speaker(self, speaker_id: str, text: str, language: str = "chinese", config: Optional[TTSConfig] = None) -> TTSResult:
         """原生定调：从指定说话人生成一个身份锚点结果"""
         logger.info(f"📍 Setting Identity from Speaker: {speaker_id}, language: {language}")
         
-        cfg = config or GenConfig()
+        cfg = config or TTSConfig()
         
         # 1. 编译 Prompt
         pdata, timing = self._build_prompt_data(text, language, is_clone=False, speaker_id=speaker_id)
@@ -209,5 +203,27 @@ class TTSStream:
         # 3. 生成结果并设为锚点
         res = self._post_process(text, pdata, lout)
         self.set_identity(res)
+        return res
+
+    def set_identity_from_clone(self, wav_path: str, text: str, language: str = "chinese") -> TTSResult:
+        """克隆定调：从外部 WAV 文件提取特征并设为身份锚点"""
+        if self.engine.encoder is None:
+            raise RuntimeError("Encoder models not found. Audio cloning is not available.")
+            
+        logger.info(f"🎤 Setting Identity from Clone: {wav_path}")
         
+        # 1. 提取特征
+        codes, spk_emb = self.engine.encoder.encode(wav_path)
+        
+        # 2. 构造 TTSResult 作为锚点
+        # 注意: 克隆锚点不需要 audio 和 summed_embeds (后者会自动重构)
+        res = TTSResult(
+            text=text,
+            text_ids=[], # 暂时留空，PromptBuilder 会处理文本
+            spk_emb=spk_emb,
+            codes=codes
+        )
+        
+        # 3. 设置为当前身份
+        self.set_identity(res)
         return res

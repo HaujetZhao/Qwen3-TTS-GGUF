@@ -1,6 +1,6 @@
 """
 engine.py - Qwen3-TTS 核心引擎
-负责资源管理、模型初始化和异步流水线调度。
+负责资源管理、模型初始化、音频特征提取及渲染。
 """
 import os
 import ctypes
@@ -12,6 +12,7 @@ from .assets import AssetsManager
 from .stream import TTSStream
 from .sampler import sample
 from .mouth_decoder import StatefulMouthDecoder
+from .predictors.encoder import EncoderPredictor
 
 class TTSEngine:
     """
@@ -26,7 +27,9 @@ class TTSEngine:
         self.paths = {
             "master_gguf": os.path.join(self.model_dir, "qwen3_tts_talker.gguf"),
             "craftsman_gguf": os.path.join(self.model_dir, "qwen3_tts_craftsman.gguf"),
-            "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder_stateful.onnx")
+            "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder_stateful.onnx"),
+            "codec_enc_onnx": os.path.join(self.model_dir, "qwen3_tts_codec_encoder.onnx"),
+            "spk_enc_onnx": os.path.join(self.model_dir, "qwen3_tts_speaker_encoder.onnx"),
         }
         
         # 1. 资产加载
@@ -38,7 +41,13 @@ class TTSEngine:
         
         # 3. 口腔解码器渲染模块 (同步模式)
         self.mouth = StatefulMouthDecoder(self.paths["mouth_onnx"], use_dml=True)
-        logger.info(f"✅ [Engine] 引擎已就绪 (Mouth Provider: {self.mouth.active_provider})")
+        
+        # 4. 音频及说话人编码器 (可选，仅用于克隆)
+        self.encoder = None
+        if os.path.exists(self.paths["codec_enc_onnx"]) and os.path.exists(self.paths["spk_enc_onnx"]):
+            self.encoder = EncoderPredictor(self.paths["codec_enc_onnx"], self.paths["spk_enc_onnx"], use_dml=False)
+            
+        logger.info(f"✅ [Engine] 引擎已就绪 (Mouth: {self.mouth.active_provider})")
 
     def _init_llama_engines(self):
         """初始化 GGUF 模型（仅加载模型，不创建 Context）"""

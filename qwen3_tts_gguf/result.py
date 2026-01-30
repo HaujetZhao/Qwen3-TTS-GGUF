@@ -38,7 +38,7 @@ class LoopOutput:
     timing: Timing                  # 性能统计对象
 
 @dataclass
-class GenConfig:
+class TTSConfig:
     """推理控制参数封装"""
     temperature: float = 0.5
     max_steps: int = 600

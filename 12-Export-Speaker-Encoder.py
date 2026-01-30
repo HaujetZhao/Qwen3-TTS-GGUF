@@ -11,7 +11,7 @@ sys.path.append(PROJECT_ROOT)
 
 def main():
     # 1. 配置路径
-    MODEL_PATH = os.path.abspath("Qwen3-TTS-12Hz-1.7B-CustomVoice")
+    MODEL_PATH = os.path.abspath("Qwen3-TTS-12Hz-1.7B-Base")
     OUTPUT_DIR = os.path.abspath("model")
     ONNX_PATH = os.path.join(OUTPUT_DIR, 'qwen3_tts_speaker_encoder.onnx')
     os.makedirs(OUTPUT_DIR, exist_ok=True)

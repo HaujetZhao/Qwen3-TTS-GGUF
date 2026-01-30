@@ -9,7 +9,7 @@ import numpy as np
 sys.path.append(os.getcwd())
 
 from qwen3_tts_gguf.engine import TTSEngine
-from qwen3_tts_gguf.result import GenConfig, TTSResult
+from qwen3_tts_gguf.result import TTSConfig, TTSResult
 
 def test_identity_mode():
     print("\n" + "="*50)
@@ -64,9 +64,10 @@ def test_identity_mode():
     for i, text in enumerate(test_sentences):
         print(f"\n--- [Round {i+1}] 正在合成: {text} ---")
         try:
-            # 使用 GenConfig 传递推理参数
-            cfg = GenConfig(temperature=0.7, max_steps=500)
-            res = stream.tts(text, play=True, config=cfg)
+            # 使用 TTSConfig 传递推理参数
+            cfg = TTSConfig(temperature=0.7, max_steps=500)
+            res = stream.tts(text, config=cfg)
+            res.play()
             
             # 打印详细性能统计 (来自 res.stats)
             res.print_stats()
@@ -92,7 +93,8 @@ def test_identity_mode():
     
     print("\n--- [Final Round] 正在使用 [轻量化恢复] 的身份进行合成 ---")
     print("(预期底层会触发 ⚡ Reconstructing 逻辑)")
-    res_final = stream.tts("听说你刚才重装了系统？现在感觉怎么样？", play=True)
+    res_final = stream.tts("听说你刚才重装了系统？现在感觉怎么样？")
+    res_final.play()
     res_final.print_stats()
     
     print(f"   合成后是否已自动缓存重构特征: {new_id.summed_embeds is not None and len(new_id.summed_embeds) > 0}")
