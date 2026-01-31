@@ -135,8 +135,8 @@ class TTSStream:
         chunk_buffer = []
         pushed_count = 0
         
-        if cfg.stream_play and self.decoder:
-            self.decoder.reset()
+        if self.decoder:
+            self.decoder.reset() # 强制重置，消除上一句的残留状态
             
         for step_codes, summed_vec in self._run_engine_loop_gen(pdata, cfg, timing):
             all_codes.append(step_codes) # 保持 numpy 状态，供 decoder 使用
@@ -200,6 +200,7 @@ class TTSStream:
                      cfg: Optional[TTSConfig] = None) -> TTSResult:
         audio = None
         if self.decoder:
+            self.decoder.reset() # 离线渲染前也必须重置
             t0 = time.time()
             audio = self.decoder.decode(np.array(lout.all_codes), is_final=True, stream=False)
             lout.timing.decoder_render_time = time.time() - t0

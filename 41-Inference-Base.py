@@ -22,6 +22,12 @@ def main():
     # 3. 设置音色锚点 (重要：克隆模式必须先设置)
     stream.set_voice(REF_AUDIO, text=REF_TEXT)
     
+    # 3.1 还原并播放参考音频 (如果加载的是不含音频的 JSON)
+    if stream.voice:
+        print(f"🔊 正在还原参考音频: {REF_AUDIO} ...")
+        stream.voice.decode(engine.decoder)
+        stream.voice.play(blocking=True)
+    
     print(f"🎙️  开始克隆推理...")
     print(f"   参考音频: {REF_AUDIO}")
     print(f"   目标文本: {TARGET_TEXT}")
