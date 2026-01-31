@@ -69,36 +69,52 @@ class StatefulDecoder:
         self.reset()
     
     def reset(self):
-        """重置所有内部状态（开始新的句子时调用）"""
-        self.pre_conv_history = np.zeros((1, 512, 0), dtype=np.float32)
-        self.latent_buffer = np.zeros((1, 1024, 0), dtype=np.float32)
-        self.conv_history = np.zeros((1, 1024, 0), dtype=np.float32)
-        
-        # KV Cache: [NUM_LAYERS] 个 Key + [NUM_LAYERS] 个 Value
-        self.past_keys = [
-            np.zeros((1, self.NUM_HEADS, 0, self.HEAD_DIM), dtype=np.float32)
-            for _ in range(self.NUM_LAYERS)
-        ]
-        self.past_values = [
-            np.zeros((1, self.NUM_HEADS, 0, self.HEAD_DIM), dtype=np.float32)
-            for _ in range(self.NUM_LAYERS)
-        ]
-        
-        # 累计帧数（用于精准切割）
-        self.total_frames_processed = 0
-        self.total_samples_output = 0
-    
-    def decode(self, audio_codes: np.ndarray, is_final: bool = False) -> np.ndarray:
         """
-        解码音频码为波形。
-        
-        Args:
-            audio_codes: 形状 [N, 16] 的音频码（N 为帧数，16 为量化器数）
-            is_final: 是否是最后一个 chunk（最后一个 chunk 会输出所有剩余音频）
+        创建一个全新的、空的解码器状态。
         
         Returns:
-            audio: 形状 [num_samples] 的音频波形 (float32, 范围 [-1, 1])
+            DecoderState: 包含全 0 初始化的状态对象
         """
+        from .protocol import DecoderState
+        
+        pre_conv_history = np.zeros((1, 512, 0), dtype=np.float32)
+        latent_buffer = np.zeros((1, 1024, 0), dtype=np.float32)
+        conv_history = np.zeros((1, 1024, 0), dtype=np.float32)
+        
+        # KV Cache: [NUM_LAYERS] 个 Key + [NUM_LAYERS] 个 Value
+        # 展平成一个列表: [k0, k1... v0, v1...] 或者交替？onnx inputs 是 past_key_0, past_value_0...
+        # 我们的 protocol 定义 kv_cache 是 List[np.ndarray]，顺序需严格匹配
+        kv_cache = []
+        for _ in range(self.NUM_LAYERS):
+            # Key
+            kv_cache.append(np.zeros((1, self.NUM_HEADS, 0, self.HEAD_DIM), dtype=np.float32))
+            # Value 
+            kv_cache.append(np.zeros((1, self.NUM_HEADS, 0, self.HEAD_DIM), dtype=np.float32))
+            
+        return DecoderState(
+            pre_conv_history=pre_conv_history,
+            latent_buffer=latent_buffer,
+            conv_history=conv_history,
+            kv_cache=kv_cache
+        )
+    
+    def decode(self, audio_codes: np.ndarray, state: "DecoderState" = None, is_final: bool = False):
+        """
+        无副作用解码 (Stateless Decode)。
+        
+        Args:
+            audio_codes: 音频码 [N, 16]
+            state: 上下文状态 (DecoderState)。如果为 None，则从零开始。
+            is_final: 是否结束
+            
+        Returns:
+            (audio, new_state): 
+                audio: 生成的波形
+                new_state: 更新后的状态对象 (如果 is_final=True，则可能返回空状态或脏状态，视具体需求而定，但 caller 应该销毁它)
+        """
+        if state is None:
+            state = self.reset()
+            
         # 输入规范化
         if audio_codes.ndim == 2:
             audio_codes = audio_codes[np.newaxis, ...]  # [1, N, 16]
@@ -107,19 +123,21 @@ class StatefulDecoder:
         n_frames = audio_codes.shape[1]
         
         if n_frames == 0:
-            return np.array([], dtype=np.float32)
+            return np.array([], dtype=np.float32), state
         
         # 构建输入 feed dict
         feed = {
             "audio_codes": audio_codes,
             "is_last": np.array([1.0 if is_final else 0.0], dtype=np.float32),
-            "pre_conv_history": self.pre_conv_history,
-            "latent_buffer": self.latent_buffer,
-            "conv_history": self.conv_history,
+            "pre_conv_history": state.pre_conv_history,
+            "latent_buffer": state.latent_buffer,
+            "conv_history": state.conv_history,
         }
+        
+        # KV Cache 解包: 列表顺序假定为 k0, v0, k1, v1 ...
         for i in range(self.NUM_LAYERS):
-            feed[f"past_key_{i}"] = self.past_keys[i]
-            feed[f"past_value_{i}"] = self.past_values[i]
+            feed[f"past_key_{i}"] = state.kv_cache[2*i]
+            feed[f"past_value_{i}"] = state.kv_cache[2*i + 1]
         
         # 执行推理
         outputs = self.sess.run(self.output_names, feed)
@@ -128,35 +146,51 @@ class StatefulDecoder:
         final_wav = outputs[0]        # [1, num_samples]
         valid_samples = int(outputs[1][0])  # 有效样本数
         
-        # 更新状态
-        self.pre_conv_history = outputs[2]
-        self.latent_buffer = outputs[3]
-        self.conv_history = outputs[4]
-        for i in range(self.NUM_LAYERS):
-            self.past_keys[i] = outputs[5 + i]
-            self.past_values[i] = outputs[5 + self.NUM_LAYERS + i]
+        # 构建新状态
+        from .protocol import DecoderState
+        new_state = DecoderState(
+            pre_conv_history = outputs[2],
+            latent_buffer = outputs[3],
+            conv_history = outputs[4],
+            kv_cache = []
+        )
+        
+        # 收集 KV Cache: outputs[5...]
+        # 输出顺序: past_key_0, past_value_0, past_key_1, past_value_1 ... 
+        # (注意：onnx 导出时的输出顺序通常是 k0, v0, k1, v1... 需确认，或者这里代码假设是 k0..k7, v0..v7)
+        # 
+        # 让我们回顾一下之前的代码：
+        # for i in range(self.NUM_LAYERS):
+        #     self.past_keys[i] = outputs[5 + i]
+        #     self.past_values[i] = outputs[5 + self.NUM_LAYERS + i]
+        # 
+        # 之前的代码明确显示输出是主要分为两块：Key 块 (5 ~ 5+N) 和 Value 块 (5+N ~ 5+2N)。
+        # 因此我们需要按照这个顺序收集，但存入 DecoderState.kv_cache 时建议保持 k, v, k, v 的交替顺序（方便 feed）或者 split 顺序。
+        # 为了与 feed 循环 (L120) 保持一致 "state.kv_cache[2*i]"，我们这里应该按交替顺序存入 list。
+        
+        new_kv = []
+        base_idx = 5
+        num_layers = self.NUM_LAYERS
+        
+        for i in range(num_layers):
+            k = outputs[base_idx + i]
+            v = outputs[base_idx + num_layers + i]
+            new_kv.append(k)
+            new_kv.append(v)
+            
+        new_state.kv_cache = new_kv
         
         # 提取有效音频
         audio = final_wav[0, :valid_samples] if valid_samples > 0 else np.array([], dtype=np.float32)
         
-        # 更新统计
-        self.total_frames_processed += n_frames
-        self.total_samples_output += len(audio)
-        
-        return audio.astype(np.float32)
+        return audio.astype(np.float32), new_state
     
     def decode_full(self, audio_codes: np.ndarray) -> np.ndarray:
         """
-        一次性解码所有音频码（非流式场景）。
-        
-        Args:
-            audio_codes: 形状 [N, 16] 的完整音频码序列
-        
-        Returns:
-            audio: 完整的音频波形
+        一次性解码所有音频码（非流式场景）。仅返回音频，自动丢弃状态。
         """
-        self.reset()
-        return self.decode(audio_codes, is_final=True)
+        audio, _ = self.decode(audio_codes, state=None, is_final=True)
+        return audio
     
     @property
     def info(self) -> dict:
@@ -169,208 +203,11 @@ class StatefulDecoder:
         }
 
 
-import multiprocessing as mp
-import atexit
-import threading
-import queue
-import time
-
-class DecoderProxy:
-    """
-    解码器多进程代理 (DecoderProxy)。
-    
-    它负责在独立进程中拉起 DecoderWorker 和 SpeakerWorker，
-    并提供线程安全的任务队列接口。
-    """
-    def __init__(self, onnx_path: str, use_dml: bool = True):
-        self.onnx_path = onnx_path
-        self.use_dml = use_dml
-        
-        # 任务控制
-        self.task_counter = 0
-        self.active_task_id = 0
-        
-        # 通讯队列
-        self.codes_q = mp.Queue()     # 主 -> Decoder
-        self.result_q = mp.Queue()    # Decoder -> Proxy
-        self.play_q = mp.Queue()      # Proxy -> Playback
-        
-        # 进程对象
-        self.decoder_proc = None
-        self.play_proc = None
-        
-        # 结果监听线程 (负责从 result_q 收集数据)
-        self.results = {}             # task_id -> list of (pcm, time)
-        self.streaming_results = {}   # task_id -> bool
-        self.ready_states = {"decoder": False, "speaker": False}
-        self.stop_listener = False
-        self.listener_thread = None
-        
-        self.start()
-        
-        # 注册自动退出逻辑
-        atexit.register(self.shutdown)
-
-    def start(self):
-        """启动工作进程"""
-        from qwen3_tts_gguf.workers import decoder_worker_proc, speaker_worker_proc
-        
-        # 1. 解调子进程 (Decoder)
-        self.decoder_proc = mp.Process(
-            target=decoder_worker_proc,
-            args=(self.codes_q, self.result_q, self.onnx_path),
-            daemon=True
-        )
-        self.decoder_proc.start()
-        
-        # 2. 播放子进程 (Speaker)
-        # 监听独立的 play_q，并向 result_q 反馈就绪状态
-        self.play_proc = mp.Process(
-            target=speaker_worker_proc,
-            args=(self.play_q, self.result_q),
-            daemon=True
-        )
-        self.play_proc.start()
-        
-        # 3. 握手：子进程启动后会回传一条消息确认已就绪
-        self._active_provider = "Pending..."
-        
-        # 4. 启动本地监听器
-        self.listener_thread = threading.Thread(target=self._listen_loop, daemon=True)
-        self.listener_thread.start()
-
-    @property
-    def active_provider(self) -> str:
-        """兼容性属性：返回后端名称"""
-        return "Multiprocessing (Worker)"
-
-    def _listen_loop(self):
-        """从结果队列中抓取数据并分类转发"""
-        while not self.stop_listener:
-            try:
-                msg = self.result_q.get(timeout=0.1)
-                if msg is None: break
-                
-                # 协议: ("AUDIO", task_id, pcm_data, compute_time)
-                msg_type, task_id, pcm, dt = msg
-                
-                # 处理就绪信号
-                if msg_type == "READY":
-                    self.ready_states[task_id] = True # task_id 这里被复用为 worker name
-                    continue
-                
-                # 1. 存入结果字典供同步获取
-                if task_id not in self.results:
-                    self.results[task_id] = []
-                self.results[task_id].append((pcm, dt))
-                
-                # 2. 如果该任务标记为流式播放，转发给播放进程
-                if task_id in self.streaming_results:
-                    if pcm is not None and len(pcm) > 0:
-                        self.play_q.put(pcm) # 仅发送原始 PCM 数据
-            except queue.Empty:
-                continue
-            except:
-                break
-
-    def reset(self):
-        """重置子进程中的解码器状态"""
-        self.active_task_id = self.task_counter
-        self.task_counter += 1
-        self.codes_q.put(("RESET", self.active_task_id, None, False))
-
-    def wait_until_ready(self, timeout=10):
-        """阻塞直到所有工作进程就绪"""
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            if all(self.ready_states.values()):
-                return True
-            time.sleep(0.1)
-        return False
-
-    def decode(self, codes: np.ndarray, is_final: bool = False, stream: bool = False) -> np.ndarray:
-        """
-        跨进程解码。
-        
-        如果 stream=True，则仅将任务推入队列，不等待结果。
-        如果 stream=False，则阻塞直到获取本次任务的所有结果（离线模式）。
-        """
-        task_id = self.task_counter
-        self.task_counter += 1
-        
-        msg_type = "DECODE_CHUNK" if stream else "DECODE"
-        if stream:
-            self.streaming_results[task_id] = True
-            
-        self.codes_q.put((msg_type, task_id, codes, is_final))
-        
-        if stream:
-            return np.array([], dtype=np.float32)
-        
-        # 同步等待 (离线模式)
-        start_wait = time.time()
-        collected_pcm = []
-        is_done = False
-        while not is_done and (time.time() - start_wait < 30.0): # 30秒超时
-            if task_id in self.results:
-                msg_list = self.results[task_id]
-                while msg_list:
-                    pcm, dt = msg_list.pop(0)
-                    if pcm is None:
-                        is_done = True
-                        break
-                    collected_pcm.append(pcm)
-            if not is_done:
-                time.sleep(0.01)
-        
-        if task_id in self.results:
-            del self.results[task_id]
-            
-        if not collected_pcm:
-            return np.array([], dtype=np.float32)
-        return np.concatenate(collected_pcm)
-
-    def raw_play(self, pcm: np.ndarray):
-        """直接向播放进程推送原始 PCM 数据 (24kHz, float32)"""
-        if pcm is not None and len(pcm) > 0:
-            self.play_q.put(pcm)
-
-    def shutdown(self):
-        """彻底关闭所有子进程，防止僵尸进程及主进程挂起"""
-        self.stop_listener = True
-        
-        # 1. 向子进程发送毒丸
-        try:
-            if self.decoder_proc and self.decoder_proc.is_alive():
-                self.codes_q.put(None)
-            if self.play_proc and self.play_proc.is_alive():
-                self.play_q.put(None) # 向播放进程发送 None
-        except: pass
-            
-        # 2. 依次清理子进程 (硬限时 join + terminate)
-        for p in [self.decoder_proc, self.play_proc]:
-            if p and p.is_alive():
-                p.join(timeout=0.3) 
-                if p.is_alive():
-                    try: p.terminate()
-                    except: pass
-        
-        # 3. 停止监听线程
-        if self.listener_thread:
-            self.listener_thread.join(timeout=0.3)
-            
-        # 4. 清理并销毁队列 (取消 join_thread 以防主线程在此挂起)
-        for q in [self.codes_q, self.result_q, self.play_q]:
-            try:
-                q.cancel_join_thread() # 关键：不强制等待缓冲区数据刷完，主进程可立即退出
-                while not q.empty():
-                    q.get_nowait()
-                q.close()
-            except: pass
 
 # 兼容旧版 API 的工厂函数
 def create_decoder(onnx_path: str, use_dml: bool = True, multiprocessing: bool = True):
     """创建解码器实例 (decoder)"""
     if multiprocessing:
+        from .proxy import DecoderProxy
         return DecoderProxy(onnx_path, use_dml)
     return StatefulDecoder(onnx_path, use_dml)
