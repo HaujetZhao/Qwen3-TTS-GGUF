@@ -26,81 +26,88 @@ class TalkerPredictor:
         # 预分配单步位置 Buffer (3 pos + 1 zero)
         self.pos_step_buffer = np.zeros(4, dtype=np.int32)
         
+        # 步进式生成状态
+        self.trailing_text_pool = None
+        self.step_idx = 0
+        
     def clear_memory(self):
         """完全清空 KV Cache"""
         self.ctx.clear_kv_cache()
         self.cur_pos = 0
+        self.trailing_text_pool = None
+        self.step_idx = 0
 
-    def prefill(self, prompt_embeds: np.ndarray, seq_id: int = 0) -> np.ndarray:
+    def prefill(self, pdata, seq_id: int = 0) -> np.ndarray:
         """
-        全量推入初始 Prompt 或新文本批次。
+        全量推入初始 Prompt。
         Args:
-            prompt_embeds: [Batch=1, Seq, Hidden=2048]
-            seq_id: 分配给此批次的序列 ID (用于精确删除)
+            pdata: PromptData 对象，包含 embd 和 trailing_text_embd
+            seq_id: 序列 ID
         Returns:
-            hidden: [Batch, Hidden]
+            hidden: 最后一个位置的隐层输出
         """
+        prompt_embeds = pdata.embd
         n_p = prompt_embeds.shape[1]
         
-        # 2. 构造 Qwen3 专用的位置编码 (3层Pos + 1层Zero)
-        # stride = n_p
+        # 初始化步进文本池
+        if pdata.trailing_text_embd is not None:
+            self.trailing_text_pool = pdata.trailing_text_embd[0]
+        else:
+            self.trailing_text_pool = None
+        self.step_idx = 0
+        
+        # 构造 Qwen3 专用的位置编码 (3层Pos + 1层Zero)
         pos_base = np.arange(self.cur_pos, self.cur_pos + n_p, dtype=np.int32)
         pos_arr = np.concatenate([pos_base, pos_base, pos_base, np.zeros(n_p, dtype=np.int32)])
         
-        # 使用 LlamaBatch 的高阶接口注入数据
+        # 注入数据
         self.batch.set_embd(prompt_embeds[0], pos=pos_arr, seq_id=seq_id)
             
         llama_status = self.ctx.decode(self.batch)
         if llama_status != 0:
-            raise RuntimeError(f"Master Prefill Decode failed with status {llama_status} at pos {self.cur_pos}")
+            raise RuntimeError(f"Talker Prefill Decode failed with status {llama_status} at pos {self.cur_pos}")
 
-        # 提取最后一个位置的输出
         hidden_ptr = self.ctx.get_embeddings()
-        
-        # [OPTIMIZATION] 移除 Logits Copy
-        # logits_ptr = self.ctx.get_logits()
-        # logits = np.ctypeslib.as_array(logits_ptr, shape=(n_p, 3072))[-1].copy()
-        
-        # 直接返回 C++ 内存的 View (切片操作本身就是 View)
-        hidden = np.ctypeslib.as_array(hidden_ptr, shape=(n_p, 2048))[-1]
+        hidden = np.ctypeslib.as_array(hidden_ptr, shape=(n_p, 2048))[-1].copy()
         
         self.cur_pos += n_p
         return hidden
 
-    def decode_step(self, feedback_embed: np.ndarray, seq_id: int = 0) -> np.ndarray:
+    def decode_step(self, audio_embed: np.ndarray, seq_id: int = 0) -> np.ndarray:
         """
-        单步预测下一帧。
+        单步预测：执行 [音频特征 + 文本特征] 的融合投喂。
         Args:
-            feedback_embed: [Hidden=2048] 汇总后的上一帧反馈向量
-            seq_id: 序列 ID
+            audio_embed: [Hidden=2048] 纯音频特征（16层叠加后的）
         Returns:
-            hidden: [1, Hidden]
+            hidden: [Hidden=2048]
         """
-        # 检查上下文是否已满
         if self.cur_pos >= self.n_ctx - 1:
-            raise IndexError(f"Master context overflow: {self.cur_pos} >= {self.n_ctx}")
+            raise IndexError(f"Talker context overflow: {self.cur_pos} >= {self.n_ctx}")
             
-        # 构造成 (1, 2048) 注入
-        if feedback_embed.ndim == 1:
-            feedback_embed = feedback_embed.reshape(1, -1)
+        # 1. 动态特征融合 (Fusion)
+        if self.trailing_text_pool is not None and self.step_idx < len(self.trailing_text_pool):
+            text_vec = self.trailing_text_pool[self.step_idx]
+        else:
+            # 文本耗尽，使用 Pad 填充背景
+            text_vec = self.assets.tts_pad
             
-        # 构造 Qwen3 单步位置编码 (N=1, 3层Pos + 1层Zero)
-        # [OPTIMIZATION] 使用预分配 Buffer
+        fused_embed = audio_embed + text_vec
+        self.step_idx += 1
+            
+        # 2. 投喂融合后的特征
+        if fused_embed.ndim == 1:
+            fused_embed = fused_embed.reshape(1, -1)
+            
+        # 构造单步位置编码
         self.pos_step_buffer[0:3] = self.cur_pos
-        # self.pos_step_buffer[3] = 0 # 已经是0了
-        
-        # 使用 LlamaBatch 的高阶接口注入数据
-        self.batch.set_embd(feedback_embed, pos=self.pos_step_buffer, seq_id=seq_id)
+        self.batch.set_embd(fused_embed, pos=self.pos_step_buffer, seq_id=seq_id)
         
         llama_status = self.ctx.decode(self.batch)
         if llama_status != 0:
-            raise RuntimeError(f"Master Step Decode failed at pos {self.cur_pos}")
+            raise RuntimeError(f"Talker Step Decode failed at pos {self.cur_pos}")
 
-        # 提取预测结果
         hidden_ptr = self.ctx.get_embeddings()
-        
-
-        hidden = np.ctypeslib.as_array(hidden_ptr, shape=(1, 2048))[0]
+        hidden = np.ctypeslib.as_array(hidden_ptr, shape=(1, 2048))[0].copy()
         
         self.cur_pos += 1
         return hidden

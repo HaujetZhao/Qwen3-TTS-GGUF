@@ -14,6 +14,7 @@ def extract_predictor_hf():
     print(f"--- 正在提取 Predictor 权重 ---")
     
     weights = load_file(MODEL_PATH)
+    weights = {k: v.float() for k, v in weights.items()}
     
     # 1. 准备投影层
     proj_w = weights["talker.code_predictor.small_to_mtp_projection.weight"] 

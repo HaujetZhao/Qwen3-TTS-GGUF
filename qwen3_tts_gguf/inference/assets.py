@@ -31,7 +31,7 @@ class AssetsManager:
         if not os.path.exists(self.paths["text_table"]):
             raise FileNotFoundError(f"缺失核心资产: {self.paths['text_table']}")
             
-        self.text_table = np.load(self.paths["text_table"])
+        self.text_table = np.load(self.paths["text_table"], 'r')
         self.tts_pad = self.text_table[151671] # 预存 PAD 向量
         
         # 2. 加载投影矩阵 (2048 -> 1024)

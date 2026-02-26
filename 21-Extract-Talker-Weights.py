@@ -57,7 +57,7 @@ def extract_talker_weights():
             # Talker backbone 权重: talker.model.*
             if key.startswith("talker.model."):
                 new_key = key.replace("talker.model.", "")
-                tensor = f.get_tensor(key)
+                tensor = f.get_tensor(key).float() # 强制转成 float32
 
                 if key == "talker.model.codec_embedding.weight":
                     print(f"  已提取 codec embedding: {key}, 形状: {tensor.shape}")
@@ -71,7 +71,7 @@ def extract_talker_weights():
                 print(f"  已提取: {key} -> {new_key}, 形状: {tensor.shape}")
 
             elif key == "talker.codec_head.weight":
-                codec_head_weight = f.get_tensor(key)
+                codec_head_weight = f.get_tensor(key).float()
                 print(f"  已提取: {key}, 形状: {codec_head_weight.shape}")
 
             else:

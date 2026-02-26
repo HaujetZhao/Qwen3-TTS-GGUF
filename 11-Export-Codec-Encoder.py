@@ -26,7 +26,7 @@ def main():
     # 2. 加载 PyTorch 模型
     try:
         # 这将加载使用 Internal Mimi 的模型，已经包含了 Dynamo Fix
-        model = Qwen3TTSTokenizerV2Model.from_pretrained(load_path)
+        model = Qwen3TTSTokenizerV2Model.from_pretrained(load_path, torch_dtype=torch.float32)
         model.eval()
         
         # 全局禁用 return_dict (双重保险)

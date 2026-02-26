@@ -14,9 +14,9 @@ def main():
 
     # 2. 配置参数
     # 官方支持音色: Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee
-    TARGET_TEXT = "很多人对大脑有个天大的误解，觉得这玩意儿是拿来思考的，其实大脑最重要的工作压根不是理解世界，而是防止自己被一惊一乍的世界给吓死，所以它真正的功能是，预测。"
+    TARGET_TEXT = "你好，我是千问"
     SPEAKER = "Vivian"
-    INSTRUCT = "用温柔的语气说"
+    INSTRUCT = ""
 
     # 3. 进行推理 (调用 custom 模式)
     print(f"🎭 正在合成...")

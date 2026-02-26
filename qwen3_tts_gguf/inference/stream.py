@@ -3,6 +3,7 @@ stream.py - TTS 语音流
 核心逻辑所在，管理单次会话的上下文，支持流式和非流式合成。
 """
 import time
+import os
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, Tuple, Union
@@ -95,6 +96,7 @@ class TTSStream:
             return self._post_process(text, pdata, lout)
         except Exception as e:
             logger.error(f"❌ Clone 推理失败: {e}")
+            print(f"❌ Clone 推理失败: {e}")
             return None
 
     def custom(self,
@@ -208,32 +210,58 @@ class TTSStream:
 
         return LoopOutput(all_codes=all_codes, summed_embeds=turn_summed_embeds, timing=timing)
 
-    def _create_sampler(self, do_sample: bool, temperature: float, top_p: float, top_k: int) -> llama.LlamaSampler:
+    def _create_sampler(self, do_sample: bool, temperature: float, top_p: float, top_k: int, 
+                        min_p: float = 0.0, repeat_penalty: float = 1.0, 
+                        frequency_penalty: float = 0.0, presence_penalty: float = 0.0,
+                        penalty_last_n: int = 128, seed: Optional[int] = None) -> llama.LlamaSampler:
         """创建原生采样器实例"""
-        if do_sample:
-            return llama.LlamaSampler(
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                seed=None
-            )
-        else:
-            return llama.LlamaSampler(temperature=0)
+        return llama.LlamaSampler(
+            temperature=temperature if do_sample else 0.0,
+            top_p=top_p if do_sample else 1.0,
+            top_k=top_k if do_sample else 0,
+            min_p=min_p if do_sample else 0.0,
+            repeat_penalty=repeat_penalty,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            penalty_last_n=penalty_last_n,
+            seed=seed
+        )
 
     def _run_engine_loop_gen(self, pdata: PromptData, cfg: TTSConfig, timing: Timing):
         t_pre_s = time.time()
-        m_hidden = self.talker.prefill(pdata.embd, seq_id=0)
+        # Talker 内部现在会处理 pdata 中的 embd 和 trailing_text_pool
+        m_hidden = self.talker.prefill(pdata, seq_id=0)
         timing.prefill_time = time.time() - t_pre_s
         
         # 1. 初始化两级原生采样器
-        talker_sampler = self._create_sampler(cfg.do_sample, cfg.temperature, cfg.top_p, cfg.top_k)
-        predictor_sampler = self._create_sampler(cfg.sub_do_sample, cfg.sub_temperature, cfg.sub_top_p, cfg.sub_top_k)
+        # 大师阶段 (Talker): 需要全套采样增强 (惩罚项 + Min-P)
+        talker_sampler = self._create_sampler(
+            cfg.do_sample, cfg.temperature, cfg.top_p, cfg.top_k, 
+            min_p=cfg.min_p, 
+            repeat_penalty=cfg.repeat_penalty,
+            frequency_penalty=cfg.frequency_penalty,
+            presence_penalty=cfg.presence_penalty,
+            penalty_last_n=cfg.penalty_last_n,
+            seed=cfg.seed
+        )
+        # 工匠阶段 (Predictor): 通常使用简洁采样，不应用惩罚项以保持声音稳定
+        predictor_sampler = self._create_sampler(cfg.sub_do_sample, cfg.sub_temperature, cfg.sub_top_p, cfg.sub_top_k, seed=cfg.seed)
+        
+        # 惩罚项豁免名单：不希望因为生成过 EOS/BOS 而降低结尾概率
+        allow_tokens = {PROTOCOL["EOS"], PROTOCOL["PAD"], PROTOCOL["BOS"]}
             
         step_idx = 0
         try:
             for step_idx in range(cfg.max_steps):
-                # ---------------- Talker Stage ----------------
-                code_0 = talker_sampler.sample(self.talker.ctx)
+                # 采样获取第 0 层码本 (大师决策)
+                code_0 = talker_sampler.sample(
+                    self.talker.ctx, idx=-1, 
+                    limit_start=0, limit_end=2048, 
+                    allow_tokens=allow_tokens # 官方豁免权：允许采到 EOS
+                )
+                
+                # 更新历史记录
+                talker_sampler.accept(code_0)
                 
                 if code_0 == PROTOCOL["EOS"]:
                     break
@@ -241,7 +269,7 @@ class TTSStream:
                 t_c_s = time.time()
                 
                 # ---------------- Predictor Stage ----------------
-                # 显式传递复用的采样器
+                # 根据第 0 层码本和 Talker 隐层，预测完整的 16 层码本
                 step_codes, step_embeds_2048 = self.predictor.predict_frame(
                     m_hidden, 
                     code_0, 
@@ -249,12 +277,16 @@ class TTSStream:
                 )
                 timing.predictor_loop_time += (time.time() - t_c_s)
                 
+                # ---------------- Feedback Stage ----------------
                 t_m_s = time.time()
-                summed = np.sum(step_embeds_2048, axis=0) + self.assets.tts_pad.flatten()
-                m_hidden = self.talker.decode_step(summed, seq_id=0)
+                # 汇总 16 层音频 Embedding
+                audio_summed = np.sum(step_embeds_2048, axis=0) 
+                
+                # 反馈给 Talker。Talker 内部会自动执行 [Audio + Text] 融合
+                m_hidden = self.talker.decode_step(audio_summed, seq_id=0)
                 timing.talker_loop_time += (time.time() - t_m_s)
                 
-                yield step_codes, summed
+                yield step_codes, audio_summed
                 
         finally:
             talker_sampler.free()
@@ -326,6 +358,7 @@ class TTSStream:
             return self.voice if success else False
         except Exception as e:
             logger.error(f"❌ 设置音色时出现无法预料的异常: {e}")
+            print(f"❌ 设置音色时出现无法预料的异常: {e}")
             return False
 
     def _set_voice_from_result(self, res: TTSResult) -> bool:
@@ -365,7 +398,7 @@ class TTSStream:
         temp_wav = save_temp_wav(samples)
         try:
             codes, spk_emb = self.engine.encoder.encode(temp_wav)
-            res = TTSResult(text=text, text_ids=self.tokenizer.encode(text).ids, spk_emb=spk_emb, codes=codes.tolist())
+            res = TTSResult(text=text, text_ids=self.tokenizer.encode(text).ids, spk_emb=spk_emb, codes=codes)
             return self._set_voice_from_result(res)
         except Exception as e:
             logger.error(f"❌ 音声特征提取失败: {e}")
