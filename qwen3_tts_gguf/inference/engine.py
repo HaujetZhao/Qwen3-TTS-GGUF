@@ -29,8 +29,8 @@ class TTSEngine:
         
         # 路径定义 (全线使用 Path 对象)
         self.paths = {
-            "talker_gguf": self.model_dir / "qwen3_tts_talker.gguf",
-            "predictor_gguf": self.model_dir / "qwen3_tts_predictor.gguf",
+            "talker_gguf": self.model_dir / "qwen3_tts_talker.q4_k.gguf",
+            "predictor_gguf": self.model_dir / "qwen3_tts_predictor.q4_k.gguf",
             "decoder_onnx": self.model_dir / "qwen3_tts_decoder.onnx",
             "codec_enc_onnx": self.model_dir / "qwen3_tts_codec_encoder.onnx",
             "spk_enc_onnx": self.model_dir / "qwen3_tts_speaker_encoder.onnx",

@@ -127,7 +127,7 @@ def main():
         "convert_hf_to_gguf.py",
         TALKER_MODEL_DIR,
         "--outfile", GGUF_OUT,
-        "--outtype", "f32"
+        "--outtype", "f16"
     ]
     
     try:

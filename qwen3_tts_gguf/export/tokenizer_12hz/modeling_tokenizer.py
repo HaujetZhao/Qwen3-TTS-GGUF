@@ -210,12 +210,13 @@ class Qwen3TTSTokenizerV2CausalConvNet(nn.Module):
 #         self.conv = nn.ConvTranspose1d(in_channels, out_channels, kernel_size, stride=stride)
 
 #         pad = kernel_size - stride
-#         self.left_pad = math.ceil(pad)
-#         self.right_pad = pad = self.left_pad
+#         self.left_pad = 0
+#         self.right_pad = int(pad)
 
 #     def forward(self, hidden_state):
 #         hidden_state = self.conv(hidden_state)
-#         hidden_state = hidden_state[..., self.left_pad : hidden_state.shape[-1] - self.right_pad]
+#         if self.right_pad > 0:
+#             hidden_state = hidden_state[..., : hidden_state.shape[-1] - self.right_pad]
 #         return hidden_state.contiguous()
 
 class Qwen3TTSTokenizerV2CausalTransConvNet(nn.Module):
@@ -230,8 +231,8 @@ class Qwen3TTSTokenizerV2CausalTransConvNet(nn.Module):
         self.conv._register_load_state_dict_pre_hook(self._load_from_state_dict_1d_adapter)
 
         pad = kernel_size - stride
-        self.left_pad = math.ceil(pad)
-        self.right_pad = pad = self.left_pad
+        self.left_pad = 0
+        self.right_pad = int(pad)
 
     def _load_from_state_dict_1d_adapter(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
         """
