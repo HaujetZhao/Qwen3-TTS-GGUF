@@ -76,33 +76,6 @@ class TTSResult:
         if self.duration == 0 or self.stats is None: return 0.0
         return self.stats.inference_only_time / self.duration
 
-    def decode(self, decoder):
-        """
-        [渲染器注入] 将自己的 codes 解码为音频。
-        适用于从 JSON 加载后丢失原始音频的场景。
-        
-        Args:
-            decoder: 具备 .decode(codes, is_final=True) 接口的对象 (如 engine.decoder)
-        """
-        if self.codes is None:
-            logger.error("❌ 无法进行音频解码: Codes 为空。")
-            return None
-            
-        t0 = time.time()
-        # 调用注入的解码器
-        try:
-            self.audio = decoder.decode(self.codes, is_final=True)
-            render_time = time.time() - t0
-            
-            # 统计职责下放：如果统计对象存在，则更新它
-            if self.stats:
-                self.stats.decoder_render_time = render_time
-                
-            return self.audio
-        except Exception as e:
-            logger.error(f"❌ 音频解码失败: {e}")
-            return None
-
     # --- IO 能力 ---
 
     def play(self, blocking: bool = True):

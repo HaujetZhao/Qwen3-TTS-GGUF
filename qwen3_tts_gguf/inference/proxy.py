@@ -9,6 +9,7 @@ import queue
 import time
 import numpy as np
 from typing import Optional, Union
+from .result import TTSResult
 
 from .protocol import DecodeRequest, DecoderResponse, SpeakerRequest, SpeakerResponse
 
@@ -166,13 +167,23 @@ class DecoderProxy:
         """阻塞等待解码器完成所有当前任务"""
         self.decoder_idle.wait(timeout=timeout)
 
-    def decode(self, codes: np.ndarray, task_id="default", is_final: bool = False, stream: bool = False) -> np.ndarray:
+    def decode(self, input: Union[np.ndarray, TTSResult], task_id="default", is_final: bool = False, stream: bool = False) -> np.ndarray:
         """
         累积式跨进程解码。
         
         1. 流式推送包 (stream=True): 立即返回空数组，后台自动累积数据。
         2. 离线/终结包 (stream=False 或 is_final=True): 阻塞等待所有片段到齐，拼接并返回完整音频。
+        3. 支持传入 TTSResult: 自动提取 codes，并在完成后写回 wav 属性及耗时统计。
         """
+        # 参数预处理
+        if isinstance(input, TTSResult):
+            codes = input.codes
+            is_final = True # 对象解码默认为离线完成模式
+        else:
+            codes = input
+
+        t_start = time.time()
+        
         # 初始化状态位与储蓄罐
         if task_id not in self.results:
             self.results[task_id] = []
@@ -212,6 +223,12 @@ class DecoderProxy:
         if task_id in self.results: del self.results[task_id]
         if task_id in self.events: del self.events[task_id]
         if task_id in self.streaming_results: del self.streaming_results[task_id]
+
+        # 结果回写 (如果输入是对象)
+        if isinstance(input, TTSResult):
+            input.audio = final_pcm
+            if input.stats:
+                input.stats.decoder_render_time = time.time() - t_start
         
         return final_pcm
 

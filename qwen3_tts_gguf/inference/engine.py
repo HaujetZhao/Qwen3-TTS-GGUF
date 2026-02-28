@@ -122,9 +122,13 @@ class TTSEngine:
     def encode(self, input) -> Optional[np.ndarray]:
         """快捷入口：提取音色特征 (Speaker Embedding)。支持传入 numpy 数组或 TTSResult。"""
         if self.speaker_encoder is None:
-            logger.error("❌ SpeakerEncoder 未就绪，无法执行编码。")
+            logger.error("❌ 本模型无 SpeakerEncoder")
             return None
         return self.speaker_encoder.encode(input)
+
+    def decode(self, codes, **kwargs) -> np.ndarray:
+        """快捷入口：解码渲染音频。支持传入 numpy 数组 (codes) 或 TTSResult。"""
+        return self.decoder.decode(codes, **kwargs)
 
 
 

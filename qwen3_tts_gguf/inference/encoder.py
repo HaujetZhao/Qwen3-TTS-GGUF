@@ -67,7 +67,7 @@ class SpeakerEncoder:
 
         if isinstance(input, TTSResult):
             wav = input.audio
-            if not wav:
+            if wav is None:
                 logger.warning("⚠️ TTSResult 中不包含音频数据，跳过特征提取过程。")
                 return input.spk_emb
             spk_emb = self.encode_audio(wav)
