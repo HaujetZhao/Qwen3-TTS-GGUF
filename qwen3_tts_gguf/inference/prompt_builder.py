@@ -27,92 +27,105 @@ class PromptBuilder:
         return res
 
     @staticmethod
+    def _wrap_ref(text: str) -> str:
+        """官方 Ref 包装: <|im_start|>assistant\n{text}<|im_end|>\n"""
+        return f"<|im_start|>assistant\n{text}<|im_end|>\n"
+
+    @staticmethod
+    def _wrap_target(text: str) -> str:
+        """官方 Target 包装: <|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"""
+        return f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+    
+    @staticmethod
+    def build_design_prompt(text: str, tokenizer, assets, instruct: str, lang_id: Optional[int] = None) -> PromptData:
+        """[音色设计入口]"""
+        return PromptBuilder._build_core(text, tokenizer, assets, lang_id=lang_id, spk_id=None, instruct=instruct)
+    
+    @staticmethod
     def build_custom_prompt(text: str, tokenizer, assets, spk_id: int, lang_id: Optional[int] = None, instruct: Optional[str] = None) -> PromptData:
         """[精品音色入口]"""
         return PromptBuilder._build_core(text, tokenizer, assets, lang_id=lang_id, spk_id=spk_id, instruct=instruct)
 
     @staticmethod
-    def build_design_prompt(text: str, tokenizer, assets, instruct: str, lang_id: Optional[int] = None) -> PromptData:
-        """[音色设计入口]"""
-        return PromptBuilder._build_core(text, tokenizer, assets, lang_id=lang_id, spk_id=None, instruct=instruct)
-
-    @staticmethod
-    def build_clone_prompt(text: str, tokenizer, assets, anchor, lang_id: int) -> PromptData:
-        """[声音克隆入口] 采用特征叠加 (Fusion) 协议"""
+    def build_clone_prompt(text: str, tokenizer, assets, voice, lang_id: int = None) -> PromptData:
+        """[声音克隆入口] 采用特征叠加 (Fusion) 协议 - 完美对齐官方逻辑"""
         t_start = time.time()
+        
         p = PROTOCOL
+        # 1. 构造官方切片的 Text ID 序列
+        ref_full_ids = PromptBuilder._get_ids(tokenizer, PromptBuilder._wrap_ref(voice.text))
+        ref_id_slice = ref_full_ids[3:-2]
         
-        # 1. 构造“文本池” (Ref_Text + Target_Text + EOS)
-        ref_ids = list(anchor.text_ids)
-        target_ids = PromptBuilder._get_ids(tokenizer, text)
-        full_text_ids = ref_ids + target_ids + [p["EOS_TOKEN"]]
+        target_full_ids = PromptBuilder._get_ids(tokenizer, PromptBuilder._wrap_target(text))
+        target_id_slice = target_full_ids[3:-5]
         
-        # 转换为已投影的文本向量
-        text_pool = assets.text_table[full_text_ids] # (60, 2048)
+        # 最终文本池 = Ref Slice + Target Slice + EOS
+        full_text_ids = ref_id_slice + target_id_slice + [p['EOS_TOKEN']] 
+        text_pool = assets.text_table[full_text_ids]
         
-        # 2. 构造“音频池” (Codec_BOS + Codes_Sum)
-        codes = anchor.codes # (T, 16)
+        # 2. 构造音频池 (Codec_BOS + Codes_Sum)
+        codes = voice.codes
         audio_vectors = []
-        # Codec BOS (2149)
-        audio_vectors.append(assets.emb_tables[0][2149])
-        # Audio steps sum
+        audio_vectors.append(assets.emb_tables[0][2149]) # Codec BOS
         for t in range(codes.shape[0]):
             step_sum = np.zeros(2048, dtype=np.float32)
             for q in range(16):
                 step_sum += assets.emb_tables[q][codes[t, q]]
             audio_vectors.append(step_sum)
-        audio_pool = np.array(audio_vectors) # (53, 2048)
-        
-        # 3. 执行叠加对齐 (Fuse)
+        audio_pool = np.array(audio_vectors) # (T2, 2048)
+
+        # 3. 文本和音频融合
         t_len = len(text_pool)
         a_len = len(audio_pool)
         
-        # 如果音频更长，文本补 Pad
-        if a_len > t_len:
+        if t_len > a_len:
+            # 文本更长：融合前 a_len，剩下的作为 trailing
+            icl_fused = text_pool[:a_len] + audio_pool
+            trailing_text = text_pool[a_len:]
+        else:
+            # 音频更长：文本补 Pad
             pad_seq = np.tile(assets.tts_pad, (a_len - t_len, 1))
             text_pool_padded = np.vstack([text_pool, pad_seq])
             icl_fused = text_pool_padded + audio_pool
             trailing_text = None
-        else:
-            # 如果文本更长，截取前 a_len 进行叠加，剩下的作为 trailing
-            icl_fused = text_pool[:a_len] + audio_pool
-            trailing_text = text_pool[a_len:]
-            
-        # 4. 构建前缀 (Prefix: Role + Control + Speaker + BOS)
-        # 固定 9 个 Token 协议
+
+        # 4. 构建前缀
         prefix = []
-        # Role: <|im_start|>, assistant, \n
-        for tid in [151644, 77091, 198]:
+
+        # Role: <|im_start|>, assistant, \n 
+        for tid in target_full_ids[:3]:
             prefix.append(assets.text_table[tid])
         
-        # Control: [think, think_bos, lang, think_eos, spk, codec_pad] + 背景
-        # 叠加背景 Pad (151671) 或 BOS (151672)
-        pad = assets.tts_pad
-        bos = assets.text_table[151672]
-        
-        control_ids = [2154, 2156, lang_id, 2157]
-        for tid in control_ids:
-            prefix.append(pad + assets.emb_tables[0][tid])
+        # Language
+        tts_pad = assets.tts_pad
+        if lang_id and lang_id in range(2048, 2147): 
+            prefill_ids = [p['THINK'], p['THINK_BOS'], lang_id, p['THINK_EOS']] 
+        else: 
+            prefill_ids = [p['THINK'], p['THINK_BOS'], p['THINK_EOS']]
+        for tid in prefill_ids:
+            prefix.append(tts_pad + assets.emb_tables[0][tid])
         
         # Speaker
-        prefix.append(pad + anchor.spk_emb)
+        prefix.append(tts_pad + voice.spk_emb)
         
-        # Codec Pad (叠加在 BOS 上)
-        prefix.append(bos + assets.emb_tables[0][2148])
+        # BOS
+        bos_text = assets.text_table[p['BOS_TOKEN']]
+        prefix.append(bos_text + assets.emb_tables[0][p['PAD']])
         
-        # 5. 组装初始 Prompt
+
+        # 5. 组装
         initial_prompt = np.vstack([np.array(prefix), icl_fused])
+        initial_prompt = initial_prompt.reshape(1, len(initial_prompt), 2048).astype(np.float32)
         
-        # 包装 Trailing Text
         trailing_text_np = None
         if trailing_text is not None and len(trailing_text) > 0:
             trailing_text_np = trailing_text.reshape(1, len(trailing_text), 2048).astype(np.float32)
 
         return PromptData(
-            embd=initial_prompt.reshape(1, len(initial_prompt), 2048).astype(np.float32),
+            embd=initial_prompt,
             text=text,
-            text_ids=target_ids,
-            spk_emb=anchor.spk_emb,
+            text_ids=target_id_slice,
+            spk_emb=voice.spk_emb,
             trailing_text_embd=trailing_text_np,
             compile_time=time.time() - t_start
         )
@@ -120,51 +133,50 @@ class PromptBuilder:
     @staticmethod
     def _build_core(text: str, tokenizer, assets, lang_id: Optional[int], spk_id: Optional[int] = None, 
                     spk_emb: Optional[np.ndarray] = None, instruct: Optional[str] = None) -> PromptData:
-        """[非克隆模式的核心构造器] 同样需要对齐首字叠加逻辑"""
+        """[基础生成构造器]"""
         t_start = time.time()
         p = PROTOCOL
-        embeds = []
+        prefix = []
         
-        # 1. 指令块 (ChatML User)
+        # 1. 指令块 (User Role)
         if instruct:
-            ins_ids = [151644, 872, 198]
-            ins_ids.extend(PromptBuilder._get_ids(tokenizer, instruct))
-            ins_ids.extend([151645, 198])
-            for tid in ins_ids: embeds.append(assets.text_table[tid])
+            ins_full_ids = PromptBuilder._get_ids(tokenizer, f"<|im_start|>user\n{instruct}<|im_end|>\n")
+            for tid in ins_full_ids: prefix.append(assets.text_table[tid])
         
-        # 2. 角色块 + 控制块 (同克隆模式)
-        for tid in [151644, 77091, 198]: embeds.append(assets.text_table[tid])
-        
+        # 2. 角色块
+        target_full_ids = PromptBuilder._get_ids(tokenizer, PromptBuilder._wrap_target(text))
+        for tid in target_full_ids[:3]:
+            prefix.append(assets.text_table[tid])
+            
+        # 3. 控制块
         pad = assets.tts_pad
-        bos = assets.text_table[151672]
-        control_ids = [2154, 2156, lang_id or 2055, 2157]
-        for tid in control_ids:
-            embeds.append(pad + assets.emb_tables[0][tid])
+        prefill_ids = [2154, 2156, lang_id or 2055, 2157]
+        for tid in prefill_ids:
+            prefix.append(pad + assets.emb_tables[0][tid])
             
         cur_spk_emb = spk_emb if spk_emb is not None else assets.emb_tables[0][spk_id or p["SPK"]]
-        embeds.append(pad + cur_spk_emb)
+        prefix.append(pad + cur_spk_emb)
         
-        # 3. 核心动作：首字叠加 (Fusion start)
-        # 官方逻辑：最后一个预填充位是 BOS_EMB + CODEC_PAD
-        embeds.append(bos + assets.emb_tables[0][2148])
+        # 4. Prefill 结束位与首字融合
+        bos_text = assets.text_table[151672]
+        # 基础模式下，首部直接连 text
+        # 官方逻辑 L2201: text_projection(hidden(input_id[:,3:4])) + codec_bos
+        prefix.append(bos_text + assets.emb_tables[0][2148])
         
-        # 4. 文本处理：首字之后全进 Trailing
-        target_ids = PromptBuilder._get_ids(tokenizer, text)
-        # full_ids = target_ids + [p["EOS_TOKEN"]]
-        full_ids = target_ids 
-        
-        # 取出第一个字叠加在最后一步 (Codec_BOS 2149) 上
-        # 注意：官方 generate 里的 logic 是在第 0 步开始加第 0 个 token
-        # 所以进入 generate 的 Prompt 应该只到 BOS 结束。
+        # 5. 文本池处理
+        # 剩下部分入 Trailing。切片为 [3:-5] 后接 EOS
+        target_id_slice = target_full_ids[3:-5]
+        full_ids = target_id_slice + [151643]
         
         text_pool = assets.text_table[full_ids]
         trailing_text_np = text_pool.reshape(1, len(text_pool), 2048).astype(np.float32)
 
         return PromptData(
-            embd=np.array(embeds).reshape(1, len(embeds), 2048).astype(np.float32),
+            embd=np.array(prefix).reshape(1, len(prefix), 2048).astype(np.float32),
             text=text,
-            text_ids=target_ids,
+            text_ids=target_id_slice,
             spk_emb=cur_spk_emb,
             trailing_text_embd=trailing_text_np,
             compile_time=time.time() - t_start
         )
+

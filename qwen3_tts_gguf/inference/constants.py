@@ -18,21 +18,19 @@ SPEAKER_MAP = {
 
 # 语言 ID 映射
 LANGUAGE_MAP = {
-    "chinese": 2055, 
     "english": 2050, 
-    "japanese": 2058, 
-    "korean": 2064,
     "german": 2053, 
     "spanish": 2054, 
+    "chinese": 2055, 
+    "japanese": 2058, 
     "french": 2061, 
+    "sichuan_dialect": 2062, 
+    "korean": 2064,
     "russian": 2069,
     "italian": 2070,
     "portuguese": 2071,
     "beijing_dialect": 2074, 
-    "sichuan_dialect": 2062, 
-    "auto": 2055 # 默认跟随中文
 }
-
 # 官方流程协议标签
 PROTOCOL = {
     "PAD": 2148, 
@@ -60,4 +58,4 @@ def map_speaker(spk) -> int:
 def map_language(lang) -> int:
     """将语言名称或 ID 映射为官方数值 ID"""
     if isinstance(lang, int): return lang
-    return LANGUAGE_MAP.get(str(lang).lower(), 2055)
+    return LANGUAGE_MAP.get(str(lang).lower(), None)

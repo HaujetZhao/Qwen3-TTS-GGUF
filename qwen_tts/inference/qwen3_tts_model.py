@@ -585,14 +585,14 @@ class Qwen3TTSModel:
                 voice_clone_prompt_dict = voice_clone_prompt
                 ref_texts_for_ids = None
 
-        input_texts = [self._build_assistant_text(t) for t in texts]
+        input_texts = [self._build_assistant_text(t) for t in texts]     # 生成结果为：'<|im_start|>assistant\n我的功能可以描述为：Intelligent Text Understanding and Voice Control. <|im_end|>\n<|im_start|>assistant\n'
         input_ids = self._tokenize_texts(input_texts)
 
         ref_ids = None
         if ref_texts_for_ids is not None:
             ref_ids = []
             for i, rt in enumerate(ref_texts_for_ids):
-                if rt is None or rt == "":
+                if rt is None or rt == "":      # rt = '你好，我是千问，你今天过得好吗？'
                     ref_ids.append(None)
                 else:
                     ref_tok = self._tokenize_texts([self._build_ref_text(rt)])[0]
