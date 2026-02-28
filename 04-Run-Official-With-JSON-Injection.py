@@ -7,13 +7,8 @@ import soundfile as sf
 import sounddevice as sd
 from pathlib import Path
 
-# 确保路径正确：官方源码 和 我们自己的库
-ROOT_DIR = Path(r"d:\qwen3-tts")
-OFFICIAL_REPO_PATH = ROOT_DIR / "Qwen3-TTS-main"
-if str(OFFICIAL_REPO_PATH) not in sys.path:
-    sys.path.insert(0, str(OFFICIAL_REPO_PATH))
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+ROOT_DIR = Path(__file__).parent
+sys.path.insert(0, str(ROOT_DIR / "Qwen3-TTS-main"))
 
 from qwen_tts import Qwen3TTSModel
 from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
