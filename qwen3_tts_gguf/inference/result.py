@@ -5,18 +5,25 @@ result.py - 合成结果与身份锚点统一类
 2. 作为 Voice Identity 锚点提供克隆所需的特征。
 3. 提供音频播放、保存以及 JSON 持久化能力。
 """
+import base64
 import json
 import os
-import time
+
 import numpy as np
-from dataclasses import dataclass, field
-from typing import List, Optional, Union
-from .constants import SAMPLE_RATE, map_speaker, map_language
+from dataclasses import dataclass
+from typing import List, Optional
+
+from .constants import SAMPLE_RATE
 from . import logger
+
+
+# ---------------------------------------------------------------------------
+# 数据结构
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Timing:
-    """性能耗时统计"""
+    """推理各阶段耗时统计"""
     prompt_time: float = 0.0
     prefill_time: float = 0.0
     talker_loop_time: float = 0.0
@@ -26,70 +33,95 @@ class Timing:
 
     @property
     def total_inference_time(self) -> float:
-        return (self.prompt_time + self.prefill_time + 
-                self.talker_loop_time + self.predictor_loop_time + 
+        """全链路总耗时（含解码渲染）"""
+        return (self.prompt_time + self.prefill_time +
+                self.talker_loop_time + self.predictor_loop_time +
                 self.decoder_render_time)
 
     @property
     def inference_only_time(self) -> float:
-        """核心推理耗时 (不包含最终的解码渲染)"""
-        return (self.prompt_time + self.prefill_time + 
+        """核心推理耗时（不含解码渲染）"""
+        return (self.prompt_time + self.prefill_time +
                 self.talker_loop_time + self.predictor_loop_time)
+
 
 @dataclass
 class LoopOutput:
     """推理内核循环的输出封装"""
-    all_codes: List[List[int]]     # 所有生成的 Codec IDs
-    summed_embeds: List[np.ndarray] # 叠加特征序列
-    timing: Timing                  # 性能统计对象
+    all_codes: List[List[int]]       # 所有生成的 Codec IDs
+    summed_embeds: List[np.ndarray]  # 叠加特征序列
+    timing: Timing                   # 性能统计对象
+
+
+# ---------------------------------------------------------------------------
+# 合成结果 / 音色锚点
+# ---------------------------------------------------------------------------
 
 @dataclass
 class TTSResult:
-    """TTS 合成结果 (同时也是音色锚点)"""
-    # 核心特征 (锚点要素)
-    text: str                               # 文字内容
-    text_ids: List[int]                     # 文本 Token IDs
-    codes: np.ndarray                       # 音频 Codec IDs (T, 16)
-    spk_emb: np.ndarray                     # 全局音色向量 (2048)
-    
-    # 选填与备注
-    info: str = ""                          # 备注信息 (如音色描述)
-    summed_embeds: Optional[List[np.ndarray]] = None # 音频叠加特征 (T, 2048) - 可选
-    
-    # 产出附件 (可选)
-    audio: Optional[np.ndarray] = None      # 音频波形 (PCM float32)
-    stats: Optional[Timing] = None          # 性能统计信息
+    """TTS 合成结果（同时也是音色锚点）"""
+
+    # 核心特征（锚点要素）
+    text: str                                          # 文字内容
+    text_ids: List[int]                                # 文本 Token IDs
+    codes: np.ndarray                                  # 音频 Codec IDs，形状 (T, 16)
+    spk_emb: np.ndarray                                # 全局音色向量，形状 (2048,)
+
+    # 选填
+    info: str = ""                                     # 备注信息（如音色描述）
+    summed_embeds: Optional[List[np.ndarray]] = None   # 音频叠加特征序列，形状 (T, 2048)
+
+    # 产出附件（可选）
+    audio: Optional[np.ndarray] = None                 # 音频波形，PCM float32
+    stats: Optional[Timing] = None                     # 性能统计
+
+    # --- 工厂方法 ---
+
+    @classmethod
+    def empty(cls) -> "TTSResult":
+        """构造一个空的、无效的 TTSResult（用于加载失败时的降级返回）"""
+        return cls(
+            text="",
+            text_ids=[],
+            codes=np.empty((0, 16), dtype=np.int64),
+            spk_emb=np.zeros(2048, dtype=np.float32),
+        )
+
+    # --- 属性 ---
 
     @property
     def is_valid_anchor(self) -> bool:
         """是否具有作为 Voice 锚点的必要特征"""
-        return self.codes is not None and self.spk_emb is not None
+        return len(self.codes) > 0 and self.spk_emb is not None
 
     @property
     def duration(self) -> float:
-        """音频时长 (s)"""
+        """音频时长（秒）"""
         if self.audio is not None:
             return len(self.audio) / SAMPLE_RATE
         return 0.0
-    
+
     @property
     def rtf(self) -> float:
-        """实时因子 (Real-Time Factor) - 基于核心推理耗时计算"""
-        if self.duration == 0 or self.stats is None: return 0.0
+        """实时因子（Real-Time Factor），基于核心推理耗时计算"""
+        if self.duration == 0 or self.stats is None:
+            return 0.0
         return self.stats.inference_only_time / self.duration
 
-    # --- IO 能力 ---
+    # --- 播放 ---
 
     def play(self, blocking: bool = True):
         """播放音频结果"""
         if self.audio is None or len(self.audio) == 0:
-            if self.codes is not None:
+            if len(self.codes) > 0:
                 logger.warning("⚠️ 此结果当前无音频数据，但检测到 Codec 特征。请先调用 .decode(engine.decoder) 进行解码渲染。")
             else:
                 logger.warning("⚠️ 此结果不包含音频数据，且无可用特征。")
             return
         import sounddevice as sd
-        sd.play(self.audio, samplerate=24000, blocking=blocking)
+        sd.play(self.audio, samplerate=SAMPLE_RATE, blocking=blocking)
+
+    # --- 保存 ---
 
     def save(self, path: str, **kwargs):
         """统一保存方法，根据后缀名自动选择 wav 或 json"""
@@ -104,109 +136,157 @@ class TTSResult:
     def save_wav(self, path: str):
         """保存为 WAV 文件"""
         if self.audio is None:
-            logger.error("❌ No audio data to save.")
+            logger.error("❌ 无音频数据，无法保存为 WAV。")
             return
         import soundfile as sf
         os.makedirs(os.path.dirname(os.path.abspath(path)) or '.', exist_ok=True)
         sf.write(path, self.audio, SAMPLE_RATE)
-        logger.info(f"💾 Audio saved to: {path}")
+        logger.info(f"💾 音频已保存: {path}")
 
-    # --- 持久化能力 ---
-
-    def save_json(self, path: str, include_audio: bool = False, include_embeds: bool = False, light: bool = False, info: Optional[str] = None):
-        """将特征锚点保存到 JSON"""
+    def save_json(self, path: str, include_audio: bool = False, include_embeds: bool = False,
+                  light: bool = False, info: Optional[str] = None):
+        """将特征锚点序列化为 JSON 文件"""
         if info is not None:
             self.info = info
-            
+
         if not self.is_valid_anchor:
-            logger.warning("⚠️ Result is incomplete, cannot save as anchor.")
+            logger.warning("⚠️ 当前结果不完整，无法保存为锚点。")
             return
-        
-        # 优化：spk_emb 采用 fp16 + Base64 存储以节省空间
-        import base64
-        spk_fp16 = self.spk_emb.astype(np.float16).tobytes()
-        spk_b64 = base64.b64encode(spk_fp16).decode('ascii')
+
+        # spk_emb 采用 fp16 + Base64 存储以节省空间
+        spk_b64 = base64.b64encode(self.spk_emb.astype(np.float16).tobytes()).decode('ascii')
 
         data = {
             "info": self.info,
             "text": self.text,
             "text_ids": self.text_ids,
             "codes": self.codes.tolist(),
-            "spk_emb": spk_b64,  # 使用 Base64 字符串
+            "spk_emb": spk_b64,
         }
 
         if include_embeds and self.summed_embeds is not None:
             data["summed_embeds"] = [e.tolist() for e in self.summed_embeds]
-        
+
         if include_audio and self.audio is not None:
             data["audio"] = self.audio.tolist()
-        
+
         os.makedirs(os.path.dirname(os.path.abspath(path)) or '.', exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=None if light else 2)
-        
-        logger.info(f"💾 Voice JSON saved to: {path} (Light: {light})")
 
-    @classmethod
-    def from_json(cls, path: str):
-        """从 JSON 加载锚点 (支持 Base64 和旧列表格式)"""
+    # --- 加载 ---
+
+    @staticmethod
+    def _is_valid_json(path: str) -> bool:
+        """检测路径指向的 JSON 是否符合锚点格式，只返回 True/False，不抛异常"""
+        # 1. 文件存在性
         if not os.path.exists(path):
-            raise FileNotFoundError(f"Identity file not found: {path}")
+            logger.warning(f"⚠️ 找不到文件: {path}")
+            return False
 
-        import base64
+        # 2. JSON 可解析性
         with open(path, 'r', encoding='utf-8') as f:
             try:
                 data = json.load(f)
             except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid JSON format in file '{path}': {e}")
+                logger.warning(f"⚠️ 不是有效的 JSON 文件: {e} at {path}")
+                return False
 
-        spk_data = data.get("spk_emb")
-        codes_data = data.get("codes")
-        text_ids_data = data.get("text_ids")
+        # 3. 必要字段存在性
+        for key in ("text", "codes", "spk_emb", "text_ids"):
+            if key not in data:
+                logger.warning(f"⚠️ 缺少必要字段 '{key}' at {path}")
+                return False
 
-        # 解析 spk_emb: 支持 Base64(fp16) 字符串和原始 List(fp32)
-        spk_emb = None
-        if isinstance(spk_data, str):
+        # 4. 类型与数值深度校验
+        if not isinstance(data["text"], str):
+            logger.warning(f"⚠️ 'text' 必须是字符串 at {path}")
+            return False
+
+        if not isinstance(data["text_ids"], list) or not all(isinstance(x, int) for x in data["text_ids"]):
+            logger.warning(f"⚠️ 'text_ids' 必须是整数列表 at {path}")
+            return False
+
+        codes = data["codes"]
+        if not isinstance(codes, list) or len(codes) == 0:
+            logger.warning(f"⚠️ 'codes' 必须是非空列表 at {path}")
+            return False
+        if not isinstance(codes[0], list) or len(codes[0]) != 16 or not all(isinstance(x, int) for x in codes[0]):
+            logger.warning(f"⚠️ 'codes' 的每一帧必须包含 16 个整数 at {path}")
+            return False
+
+        spk_data = data["spk_emb"]
+        if isinstance(spk_data, list):
+            if len(spk_data) != 2048:
+                logger.warning(f"⚠️ 'spk_emb' 列表维度必须为 2048，实际为 {len(spk_data)} at {path}")
+                return False
+        elif isinstance(spk_data, str):
+            # Base64(fp16 bytes) → 解码后校验真实维度
             try:
-                # 尝试 Base64 解码，假定为 fp16
-                raw_bytes = base64.b64decode(spk_data)
-                spk_emb = np.frombuffer(raw_bytes, dtype=np.float16).astype(np.float32)
+                spk_arr = np.frombuffer(base64.b64decode(spk_data), dtype=np.float16)
             except Exception as e:
-                logger.error(f"❌ Failed to decode Base64 spk_emb: {e}")
-        elif isinstance(spk_data, list):
+                logger.warning(f"⚠️ 'spk_emb' Base64 解码失败: {e} at {path}")
+                return False
+            if len(spk_arr) != 2048:
+                logger.warning(f"⚠️ 'spk_emb' 解码后维度错误: {len(spk_arr)}，期望 2048 at {path}")
+                return False
+        else:
+            logger.warning(f"⚠️ 'spk_emb' 格式应为 list 或 Base64 字符串 at {path}")
+            return False
+
+        return True
+
+    @classmethod
+    def from_json(cls, path: str) -> "TTSResult":
+        """从 JSON 加载锚点（支持 Base64 和旧列表格式）；文件无效时记录日志并返回空结果"""
+        if not cls._is_valid_json(path):
+            logger.warning(f"⚠️ 无法加载锚点，返回空 TTSResult: {path}")
+            return cls.empty()
+
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        spk_data = data["spk_emb"]
+        if isinstance(spk_data, str):
+            # 新版：Base64(fp16) → fp32
+            spk_emb = np.frombuffer(base64.b64decode(spk_data), dtype=np.float16).astype(np.float32)
+        else:
+            # 旧版：直接数组列表
             spk_emb = np.array(spk_data, dtype=np.float32)
 
         res = cls(
-            text=data.get("text", ""),
-            info=data.get("info", ""),
-            text_ids=text_ids_data if text_ids_data is not None else [],
+            text=data["text"],
+            text_ids=data["text_ids"],
+            codes=np.array(data["codes"], dtype=np.int64),
             spk_emb=spk_emb,
-            codes=np.array(codes_data, dtype=np.int64) if codes_data is not None else None,
+            info=data.get("info", ""),
         )
 
         if "summed_embeds" in data:
             res.summed_embeds = [np.array(e, dtype=np.float32) for e in data["summed_embeds"]]
-        
+
         if "audio" in data:
             res.audio = np.array(data["audio"], dtype=np.float32)
-            
+
         return res
 
+    # --- 统计报告 ---
+
     def print_stats(self):
-        """打印性能报告报告"""
+        """打印性能报告"""
         if self.stats is None:
-            print("No performance stats available for this result.")
+            logger.warning("⚠️ 当前结果无性能统计信息。")
             return
-            
+
         s = self.stats
         print("-" * 40)
         print(f"性能分析报告 (音频长度: {self.duration:.2f}s | 文本长度: {len(self.text)})")
-        print(f"  1. Prompt 编译: {s.prompt_time:.4f}s")
+        print(f"  1. Prompt 编译:    {s.prompt_time:.4f}s")
         print(f"  2. Talker Prefill: {s.prefill_time:.4f}s")
-        print(f"  3. 自回环总计: {s.talker_loop_time + s.predictor_loop_time:.4f}s")
-        print(f"     └─ 大师 (Talker): {s.talker_loop_time:.4f}s")
-        print(f"     └─ 工匠 (Predictor): {s.predictor_loop_time:.4f}s")
-        print(f"  4. 解码渲染 (Decoder): {s.decoder_render_time:.4f}s")
+        print(f"  3. 自回环总计:     {s.talker_loop_time + s.predictor_loop_time:.4f}s")
+        print(f"     └─ 大师 (Talker):     {s.talker_loop_time:.4f}s")
+        print(f"     └─ 工匠 (Predictor):  {s.predictor_loop_time:.4f}s")
+        print(f"  4. 解码渲染:       {s.decoder_render_time:.4f}s")
         print("-" * 40)
         print(f"核心推理耗时: {s.inference_only_time:.2f}s | RTF (Core): {self.rtf:.2f}")
         print(f"全链路总响应: {s.total_inference_time:.2f}s")
