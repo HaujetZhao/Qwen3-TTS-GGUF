@@ -9,6 +9,13 @@ from qwen3_tts_gguf.inference.engine import TTSEngine
 from qwen3_tts_gguf.inference.config import TTSConfig
 from qwen3_tts_gguf.inference.prompt_builder import PromptBuilder
 
+# ==================== Vulkan 选项 ====================
+
+# os.environ["VK_ICD_FILENAMES"] = "none"       # 禁止 Vulkan
+# os.environ["GGML_VK_VISIBLE_DEVICES"] = "0"   # 禁止 Vulkan 用独显（强制用集显）
+# os.environ["GGML_VK_DISABLE_F16"] = "1"       # 禁止 VulkanFP16 计算（Intel集显fp16有溢出问题）
+
+
 # --- [DEBUG] 打桩逻辑：保存 Prompt Embedding ---
 _original_build_core = PromptBuilder._build_core
 
@@ -60,7 +67,7 @@ def main():
 
     # 流式模式下，clone 依然会返回完整 result，但播放是并发进行的
     print(f"\n🎙️  [2/2] 开始流式推理 (边推边播)...")
-    target_text = "我的功能可以描述为：Intelligent Text Understanding and Voice Control"
+    target_text = "你今天过得好吗？"
     config = TTSConfig(max_steps=400, temperature=0.6, sub_temperature=0.6, seed=45)
     # config = TTSConfig(max_steps=400, do_sample=False, sub_do_sample=False)
     result = stream.clone(
