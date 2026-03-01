@@ -12,9 +12,15 @@ class CodecEncoder:
     def __init__(self, onnx_path: str):
         self.onnx_path = onnx_path
         providers = ['CPUExecutionProvider']
+
+        sess_opts = ort.SessionOptions()
+        sess_opts.log_severity_level = 3
+        sess_opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        sess_opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         
         logger.info(f"[CodecEncoder] 正在初始化 ONNX 会话...")
-        self.sess = ort.InferenceSession(onnx_path, providers=providers)
+        self.sess = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=providers)
         self.active_provider = self.sess.get_providers()[0]
         logger.info(f"✅ [CodecEncoder] 已就绪 ({self.active_provider})")
 
@@ -35,9 +41,15 @@ class SpeakerEncoder:
     def __init__(self, onnx_path: str):
         self.onnx_path = onnx_path
         providers = ['CPUExecutionProvider']
+
+        sess_opts = ort.SessionOptions()
+        sess_opts.log_severity_level = 3
+        sess_opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        sess_opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         
         logger.info(f"[SpeakerEncoder] 正在初始化 ONNX 会话...")
-        self.sess = ort.InferenceSession(onnx_path, providers=providers)
+        self.sess = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=providers)
         
         # 初始化 Mel 提取器 (纯 NumPy/SciPy 对齐版)
         self.mel_extractor = MelExtractor(

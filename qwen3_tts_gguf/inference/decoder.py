@@ -58,8 +58,14 @@ class StatefulDecoder:
             available = ort.get_available_providers()
             if 'DmlExecutionProvider' in available:
                 providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
-        
-        self.sess = ort.InferenceSession(onnx_path, providers=providers)
+
+        sess_opts = ort.SessionOptions()
+        sess_opts.log_severity_level = 3
+        sess_opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        sess_opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+        self.sess = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=providers)
         self.output_names = [out.name for out in self.sess.get_outputs()]
         
         # 获取实际使用的 provider
