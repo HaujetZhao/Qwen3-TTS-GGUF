@@ -16,9 +16,9 @@ class AssetsManager:
         
         # 定义关键资产路径
         self.paths = {
-            "text_table": os.path.join(model_dir, "text_embedding_projected.npy"),
-            "proj_w": os.path.join(model_dir, "proj_weight.npy"),
-            "proj_b": os.path.join(model_dir, "proj_bias.npy")
+            "text_table": os.path.join(model_dir, 'embeddings', "text_embedding_projected.npy"),
+            "proj_w": os.path.join(model_dir, 'embeddings', "proj_weight.npy"),
+            "proj_b": os.path.join(model_dir, 'embeddings', "proj_bias.npy")
         }
         
         self.load_all()
@@ -36,8 +36,8 @@ class AssetsManager:
         
         # 2. 加载投影矩阵 (2048 -> 1024)
         self.proj = {
-            "weight": np.load(self.paths["proj_w"]),
-            "bias": np.load(self.paths["proj_b"])
+            "weight": np.load(self.paths["proj_w"], 'r'),
+            "bias": np.load(self.paths["proj_b"], 'r')
         }
         
         # 3. 加载 16 组 Codec Embedding Tables
@@ -48,13 +48,13 @@ class AssetsManager:
         pb = self.proj["bias"]
         
         for i in range(16):
-            path = os.path.join(self.model_dir, f"codec_embedding_{i}.npy")
+            path = os.path.join(self.model_dir, 'embeddings', f"codec_embedding_{i}.npy")
             if not os.path.exists(path):
                 # 如果没有 16 组，尝试兼容某些旧版本或精简版
                 logger.warning(f"[Assets] 缺失第 {i} 组 Codec 嵌入表，尝试跳过...")
                 continue
                 
-            table = np.load(path)
+            table = np.load(path, 'r')
             self.emb_tables.append(table)
             
             # 预投影：加速工匠模型推理。

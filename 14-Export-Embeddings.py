@@ -14,7 +14,7 @@ from export_config import MODEL_DIR, EXPORT_DIR
 
 # Configuration
 MODEL_PATH = Path(MODEL_DIR)
-OUTPUT_DIR = Path(EXPORT_DIR)
+OUTPUT_DIR = Path(EXPORT_DIR) / 'embeddings'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def export_embeddings():
@@ -22,8 +22,8 @@ def export_embeddings():
     try:
         model = Qwen3TTSForConditionalGeneration.from_pretrained(
             MODEL_PATH, 
-            torch_dtype=torch.float32, # Use float32 for clean export
-            device_map="cpu"             # Export on CPU to avoid OOM
+            torch_dtype=torch.float32, 
+            device_map="cpu"
         )
     except Exception as e:
         print(f"加载模型失败: {e}")
@@ -42,7 +42,7 @@ def export_embeddings():
         projected_text_embed = model.talker.text_projection(raw_text_embed)
         print(f"    投影后的文本嵌入形状: {projected_text_embed.shape}")
         
-        np.save(OUTPUT_DIR / "text_embedding_projected.npy", projected_text_embed.numpy())
+        np.save(OUTPUT_DIR / "text_embedding_projected.npy", projected_text_embed.numpy().astype(np.float16))
         print(f"    已保存至: {OUTPUT_DIR / 'text_embedding_projected.npy'}")
 
     print("[3/5] 正在导出 Codec 0 嵌入层 (Talker 表 0)...")

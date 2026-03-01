@@ -84,8 +84,8 @@ def extract_predictor_hf():
         json.dump(config, f, indent=2)
         
     # 6. 为推理提供 Numpy 资产
-    np.save(os.path.join(EXPORT_DIR, "proj_weight.npy"), proj_w.float().numpy())
-    np.save(os.path.join(EXPORT_DIR, "proj_bias.npy"), proj_b.float().numpy())
+    np.save(os.path.join(EXPORT_DIR, 'embeddings', "proj_weight.npy"), proj_w.float().numpy())
+    np.save(os.path.join(EXPORT_DIR, 'embeddings', "proj_bias.npy"), proj_b.float().numpy())
     print(f"📊 额外导出 Numpy 投影层资产至: {EXPORT_DIR}")
         
     print(f"✅ Predictor HF 格式提取完成: {OUTPUT_DIR}")
