@@ -251,7 +251,10 @@ class Qwen3TTSTokenizerV2CausalTransConvNet(nn.Module):
         # 降维：[B, C, 1, T_new] -> [B, C, T_new]
         hidden_state = hidden_state.squeeze(2)
         
-        hidden_state = hidden_state[..., self.left_pad : hidden_state.shape[-1] - self.right_pad]
+        if self.right_pad > 0:
+            hidden_state = hidden_state[..., self.left_pad : -self.right_pad]
+        else:
+            hidden_state = hidden_state[..., self.left_pad :]
         return hidden_state.contiguous()
 
 class Qwen3TTSTokenizerV2ConvNeXtBlock(nn.Module):
