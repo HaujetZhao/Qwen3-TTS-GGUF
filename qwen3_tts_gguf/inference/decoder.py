@@ -112,7 +112,39 @@ class StatefulDecoder:
     
     def decode(self, audio_codes: np.ndarray, state: "DecoderState" = None, is_final: bool = False):
         """
-        无副作用解码 (Stateless Decode)。
+        [对外封装] 对多于 45 帧的 codes 分批解码，防止 VRAM 溢出。
+        """
+        # 输入规范化获取长度
+        if audio_codes.ndim == 2:
+            n_frames = audio_codes.shape[0]
+        elif audio_codes.ndim == 3:
+            n_frames = audio_codes.shape[1]
+        else:
+            n_frames = len(audio_codes)
+
+        if n_frames <= 45:
+            return self._decode(audio_codes, state=state, is_final=is_final)
+            
+        # 批量解码逻辑
+        chunk_size = 45
+        full_audio = []
+        curr_state = state
+        
+        for i in range(0, n_frames, chunk_size):
+            chunk = audio_codes[i:i+chunk_size]
+            is_last_chunk = (i + chunk_size >= n_frames)
+            
+            # 只有最后一个分片才接受外部的 is_final 状态
+            chunk_is_final = is_final if is_last_chunk else False
+            
+            chunk_audio, curr_state = self._decode(chunk, state=curr_state, is_final=chunk_is_final)
+            full_audio.append(chunk_audio)
+            
+        return np.concatenate(full_audio), curr_state
+
+    def _decode(self, audio_codes: np.ndarray, state: "DecoderState" = None, is_final: bool = False):
+        """
+        底层原子解码 (Stateless Decode)。一次最多建议 45 帧。
         
         Args:
             audio_codes: 音频码 [N, 16]
@@ -128,6 +160,8 @@ class StatefulDecoder:
             state = self.create_state()
             
         # 输入规范化
+        if audio_codes.ndim == 1:
+             audio_codes = audio_codes.reshape(-1, 16)
         if audio_codes.ndim == 2:
             audio_codes = audio_codes[np.newaxis, ...]  # [1, N, 16]
         
