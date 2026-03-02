@@ -199,7 +199,7 @@ class AttentiveStatisticsPooling(nn.Module):
 
         if max_len is None:
             max_len = length.max().long().item()  # using arange to generate mask
-        mask = torch.arange(max_len, device=length.device, dtype=length.dtype).expand(
+        mask = torch.arange(max_len, device=length.device, dtype=torch.long).to(length.dtype).expand(
             len(length), max_len
         ) < length.unsqueeze(1)
 
