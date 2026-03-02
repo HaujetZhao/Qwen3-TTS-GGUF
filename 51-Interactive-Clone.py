@@ -10,8 +10,8 @@ import numpy as np
 # 确保能找到 qwen3_tts_gguf 包
 sys.path.append(os.getcwd())
 
-from qwen3_tts_gguf import TTSEngine, TTSConfig, TTSResult
-from qwen3_tts_gguf.constants import SPEAKER_MAP, LANGUAGE_MAP
+from qwen3_tts_gguf.inference import TTSEngine, TTSConfig, TTSResult
+from qwen3_tts_gguf.inference.schema.constants import SPEAKER_MAP, LANGUAGE_MAP
 
 def print_help():
     print("\n" + "="*50)
@@ -40,7 +40,7 @@ def interactive_session():
         return
 
     # 2. 默认配置
-    cfg = TTSConfig(temperature=0.8)
+    cfg = TTSConfig(temperature=0.6, sub_temperature=0.6, seed=42, sub_seed=45)
     last_result: Optional[TTSResult] = None
 
     print("\n✨ 引擎就绪！您可以直接输入文本进行合成，或输入 /help 查看指令。")
@@ -79,7 +79,7 @@ def interactive_session():
                     spk, lang, v_text = parts[1], parts[2], parts[3]
                     print(f"🎬 正在根据 [{spk}] 建立音色锚点...")
                     # 内部会自动编码并返回结果
-                    last_result = stream.set_voice(spk, text=v_text, language=lang, streaming=True)
+                    last_result = stream.set_voice(spk, text=v_text, language=lang)
                     stream.join()
                     print(f"✅ 音色已锁定。")
                 elif cmd == '/load':
@@ -105,7 +105,7 @@ def interactive_session():
                         print("❌ 用法: /design <文本> <指令>")
                         continue
                     print("🎨 正在设计并生成...")
-                    last_result = stream.design(parts[1], instruct=parts[2], config=cfg, streaming=True)
+                    last_result = stream.design(parts[1], instruct=parts[2], config=cfg)
                     stream.join()
                 elif cmd == '/custom':
                     if len(parts) < 3:
@@ -113,7 +113,7 @@ def interactive_session():
                         continue
                     ins = parts[3] if len(parts) > 3 else None
                     print(f"🎭 正在使用精品音色 [{parts[2]}] 合成...")
-                    last_result = stream.custom(parts[1], speaker=parts[2], instruct=ins, config=cfg, streaming=True)
+                    last_result = stream.custom(parts[1], speaker=parts[2], instruct=ins, config=cfg)
                     stream.join()
                 elif cmd == '/reset':
                     stream.reset()
@@ -127,7 +127,7 @@ def interactive_session():
             # --- 标准合成 (Clone 模式) ---
             try:
                 print("🎤 正在流式合成...")
-                last_result = stream.clone(raw_input, config=cfg, streaming=True, verbose=True)
+                last_result = stream.clone(raw_input, config=cfg)
                 stream.join()
                 if last_result:
                     print(f"✨ 完成! [RTF: {last_result.rtf:.2f}]")
