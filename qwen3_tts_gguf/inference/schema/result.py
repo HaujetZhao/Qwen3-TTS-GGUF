@@ -35,21 +35,21 @@ class Timing:
     total_steps: int = 0
 
     @property
-    def first_chunk_decode_time(self) -> float:
+    def first_decode_latency(self) -> float:
         """从第一块音频消息发给子进程到渲染完成的时间"""
         return self.decoder_compute_times[0] if self.decoder_compute_times else 0.0
 
     @property
-    def total_first_audio_delay(self) -> float:
-        """全链路首音延迟 = 攒码完成耗时 + 首包解码渲染耗时"""
-        if self.chunk_gen_times and self.decoder_compute_times:
-            return self.time_to_first_chunk + self.first_chunk_decode_time
-        return 0.0
-
-    @property
-    def time_to_first_chunk(self) -> float:
+    def first_chunk_latency(self) -> float:
         """即 chunk_gen_times[0]，从推理开始到第一个 chunk 攒码完成的绝对耗时"""
         return self.chunk_gen_times[0] if self.chunk_gen_times else 0.0
+
+    @property
+    def first_audio_latency(self) -> float:
+        """全链路首音延迟 = 攒码完成耗时 + 首包解码渲染耗时"""
+        if self.chunk_gen_times and self.decoder_compute_times:
+            return self.first_chunk_latency + self.first_decode_latency
+        return 0.0
 
     @property
     def total_talker_time(self) -> float:
@@ -312,22 +312,12 @@ class TTSResult:
 
         s = self.stats
         print("-" * 40)
-        print(f"性能分析报告 (音频长度: {self.duration:.2f}s | 文本长度: {len(self.text)})")
-        print(f"  1. Prompt 编译:    {s.prompt_time:.4f}s")
-        print(f"  2. Talker Prefill: {s.prefill_time:.4f}s")
-        print(f"  3. 自回环总计:     {s.total_talker_time + s.total_predictor_time:.4f}s")
-        print(f"     └─ 大师 (Talker):     {s.total_talker_time:.4f}s")
-        print(f"     └─ 工匠 (Predictor):  {s.total_predictor_time:.4f}s")
-        print(f"  4. 解码渲染:       {s.total_decoder_time:.4f}s")
-        
-        # 补充流式延迟统计
-        if s.chunk_gen_times:
-            print(f"  5. 流式分段统计 (Chunk Metrics):")
-            print(f"     └─ 生成耗时序列: {', '.join([f'{x:.3f}s' for x in s.chunk_gen_times])}")
-            if s.total_first_audio_delay > 0:
-                print(f"     └─ 首包解码渲染: {s.first_chunk_decode_time:.4f}s")
-                print(f"     └─ 全链路 FBL:   {s.total_first_audio_delay:.4f}s")
+        print(f"性能分析报告 (音频长度: {self.duration:.2f}s)")
+        print(f"  1. Prompt:    {s.prompt_time:.2f}s")
+        print(f"  2. Prefill:   {s.prefill_time:.2f}s")
+        print(f"  3. Generate:  {s.total_talker_time + s.total_predictor_time:.2f}s (Talker: {s.total_talker_time:.2f}s, Predictor: {s.total_predictor_time:.2f}s)")
+        print(f"  4. Decode:    {s.total_decoder_time:.2f}s")
+        print(f"  5. Latency:   {s.first_audio_latency:.2f}s (Generate: {s.first_chunk_latency:.2f}s, Decode: {s.first_decode_latency:.2f}s)")
             
         print("-" * 40)
-        print(f"核心推理耗时: {s.inference_only_time:.2f}s | RTF (Core): {self.rtf:.2f}")
-        print(f"全链路总响应: {s.total_inference_time:.2f}s")
+        print(f"核心总耗时: {s.inference_only_time:.2f}s | RTF (Core): {self.rtf:.2f}")
