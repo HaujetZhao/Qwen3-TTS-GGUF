@@ -53,7 +53,7 @@ def main():
         streaming=True,
         verbose=True, 
         config=config, 
-        chunk_size=25,
+        chunk_size=8,
     )
     result.print_stats()
     

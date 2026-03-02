@@ -12,14 +12,43 @@ import os
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional
-
 from .constants import SAMPLE_RATE
+from .protocol import DecoderResponse
 from . import logger
 
 
 # ---------------------------------------------------------------------------
 # 数据结构
 # ---------------------------------------------------------------------------
+
+@dataclass
+class DecodeResult:
+    """DecoderProxy.decode 的返回对象"""
+    responses: List[DecoderResponse] = field(default_factory=list)
+
+    @property
+    def audio(self) -> Optional[np.ndarray]:
+        """拼接后的完整音频"""
+        if not self.responses:
+            return None
+        pcms = [r.audio for r in self.responses if r.audio is not None]
+        return np.concatenate(pcms) if pcms else None
+
+    @property
+    def total_compute_time(self) -> float:
+        """子进程总计算耗时"""
+        return sum(self.chunk_compute_times)
+
+    @property
+    def chunk_compute_times(self) -> List[float]:
+        """每块详细耗时"""
+        return [r.compute_time for r in self.responses]
+
+    @property
+    def first_response_time(self) -> float:
+        """第一个包返回的绝对时间点"""
+        return self.responses[0].recv_time if self.responses else 0.0
+
 
 @dataclass
 class Timing:
@@ -83,6 +112,7 @@ class LoopOutput:
     all_codes: List[List[int]]       # 所有生成的 Codec IDs
     summed_embeds: List[np.ndarray]  # 叠加特征序列
     timing: Timing                   # 性能统计对象
+    decode_result: Optional[DecodeResult] = None # 解码器完整返回对象
 
 
 # ---------------------------------------------------------------------------

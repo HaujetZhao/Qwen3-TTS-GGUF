@@ -77,10 +77,12 @@ class StatefulDecoder:
         # 获取实际使用的 provider
         self.active_provider = self.sess.get_providers()[0]
         
+        # 预热
+        warmup_codes = np.zeros((8, 16), dtype=np.int64)
+        self.decode(warmup_codes, is_final=True)
+
         logger.info(f"✅ [Decoder] 已就绪 ({self.active_provider}), 精度: {self.dtype.__name__}")
         
-        # 初始化状态 (工厂调用)
-        self.create_state()
     
     def create_state(self):
         """

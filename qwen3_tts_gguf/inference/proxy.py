@@ -9,9 +9,9 @@ import queue
 import time
 import numpy as np
 from typing import Optional, Union
-from .schema.result import TTSResult
+from .schema.result import TTSResult, DecodeResult
 
-from .schema.protocol import DecodeRequest, DecoderResponse, SpeakerRequest, SpeakerResponse, DecodeResult
+from .schema.protocol import DecodeRequest, DecoderResponse, SpeakerRequest, SpeakerResponse
 
 class DecoderProxy:
     """

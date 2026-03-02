@@ -8,7 +8,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, List, Tuple, Union
 from .schema.constants import PROTOCOL, map_speaker, map_language
-from .schema.result import TTSResult, Timing, LoopOutput
+from .schema.result import TTSResult, Timing, LoopOutput, DecodeResult
 from .config import TTSConfig
 from .talker import TalkerPredictor
 from .predictor import Predictor
@@ -63,7 +63,7 @@ class TTSStream:
               language: str = "chinese",
               config: Optional[TTSConfig] = None,
               streaming: bool = False,
-              chunk_size: int = 25,
+              chunk_size: int = 8,
               verbose: bool = True) -> Optional[TTSResult]:
         """
         [克隆模式] 使用当前流中已设定的音色锚点（Voice Anchor）进行语音合成。
@@ -97,6 +97,7 @@ class TTSStream:
             timing.prompt_time = pdata.compile_time
             
             lout = self._run_engine_loop(pdata, timing, cfg, streaming=streaming, chunk_size=chunk_size, verbose=verbose)
+            
             return self._post_process(text, pdata, lout)
         except Exception as e:
             logger.error(f"❌ Clone 推理失败: {e}", exc_info=True)
@@ -110,7 +111,7 @@ class TTSStream:
                instruct: Optional[str] = None,
                config: Optional[TTSConfig] = None,
                streaming: bool = False,
-               chunk_size: int = 25,
+               chunk_size: int = 8,
                verbose: bool = True) -> Optional[TTSResult]:
         """
         [精品音色模式] 使用官方内置的精品预设音色进行合成，支持自然语言渲染指令。
@@ -154,7 +155,7 @@ class TTSStream:
                language: str = "chinese",
                config: Optional[TTSConfig] = None,
                streaming: bool = False,
-               chunk_size: int = 25,
+               chunk_size: int = 8,
                verbose: bool = True) -> Optional[TTSResult]:
         """
         [音色设计模式] 完全通过自然语言描述来设计并生成一个全新的音色。
@@ -191,7 +192,7 @@ class TTSStream:
         return self.clone(*args, **kwargs)
 
     def _run_engine_loop(self, pdata: PromptData, timing: Timing, cfg: TTSConfig, 
-                         streaming: bool = False, chunk_size: int = 25, verbose: bool = False) -> LoopOutput:
+                         streaming: bool = False, chunk_size: int = 8, verbose: bool = False) -> LoopOutput:
         all_codes = []
         turn_summed_embeds = []
         chunk_buffer = []
@@ -234,15 +235,20 @@ class TTSStream:
         logger.info(f"[Stream] 推理循环结束，共 {step_count} 步")
 
         # 最后一个 chunk，此时 decode 会返回 DecodeResult
-        decoder_result = self.decoder.decode(
+        timing.chunk_gen_times.append(time.time() - last_chunk_time)
+        decode_result = self.decoder.decode(
             np.array(chunk_buffer) if chunk_buffer else np.zeros((0, 16)), 
             task_id=current_task_id, is_final=True, stream=streaming
         )
-        
         # 记录 decoder 的每一个 chunk 的耗时
-        timing.decoder_compute_times = decoder_result.chunk_compute_times
+        timing.decoder_compute_times = decode_result.chunk_compute_times
 
-        return LoopOutput(all_codes=all_codes, summed_embeds=turn_summed_embeds, timing=timing)
+        return LoopOutput(
+            all_codes=all_codes, 
+            summed_embeds=turn_summed_embeds, 
+            timing=timing,
+            decode_result=decode_result
+        )
 
     def _create_sampler(self, do_sample: bool, temperature: float, top_p: float, top_k: int, 
                         min_p: float = 0.0, repeat_penalty: float = 1.0, 
@@ -284,7 +290,7 @@ class TTSStream:
             cfg.sub_temperature, 
             cfg.sub_top_p, 
             cfg.sub_top_k, 
-            seed=cfg.seed
+            seed=cfg.sub_seed
         )
         
         # 惩罚项豁免名单：不希望因为生成过 EOS/BOS 而降低结尾概率
@@ -338,15 +344,8 @@ class TTSStream:
                      text: str, 
                      pdata: PromptData, 
                      lout: LoopOutput) -> TTSResult:
-        audio = None
-        if self.decoder:
-            t0 = time.time()
-            d_res = self.decoder.decode(np.array(lout.all_codes), is_final=True, stream=False)
-            audio = d_res.audio
-            lout.timing.decoder_compute_times = d_res.chunk_compute_times
-
         return TTSResult(
-            audio=audio,
+            audio=lout.decode_result.audio if lout.decode_result else None,
             text=text,
             text_ids=pdata.text_ids,
             spk_emb=pdata.spk_emb,
