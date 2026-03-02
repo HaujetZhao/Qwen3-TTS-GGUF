@@ -30,9 +30,10 @@ class TTSStream:
         # 1. 初始化流独立的 Context 和 Batch
         self._init_contexts()
         
-        # 2. 初始化推理核心 (Talker & Predictor)
+        # 2. 初始化推理核心 (Talker, Predictor & PromptBuilder)
         self.talker = TalkerPredictor(engine.talker_model, self.talker_ctx, self.talker_batch, self.assets)
         self.predictor = Predictor(engine.predictor_model, self.predictor_ctx, self.predictor_batch, self.assets)
+        self.prompt_builder = PromptBuilder(self.tokenizer, self.assets)
         
         # 3. 音色锚点 (Voice)
         self.voice: Optional[TTSResult] = None
@@ -89,7 +90,7 @@ class TTSStream:
         
         try:
             lang_id = map_language(language)
-            pdata = PromptBuilder.build_clone_prompt(text, self.tokenizer, self.assets, self.voice, lang_id)
+            pdata = self.prompt_builder.build_clone_prompt(text, self.voice, lang_id)
             
             timing = Timing()
             timing.prompt_time = pdata.compile_time
@@ -135,7 +136,7 @@ class TTSStream:
         try:
             spk_id = map_speaker(speaker)
             lang_id = map_language(language) if language.lower() != "auto" else None
-            pdata = PromptBuilder.build_custom_prompt(text, self.tokenizer, self.assets, spk_id, lang_id, instruct)
+            pdata = self.prompt_builder.build_custom_prompt(text, spk_id, lang_id, instruct)
             
             timing = Timing()
             timing.prompt_time = pdata.compile_time
@@ -174,7 +175,7 @@ class TTSStream:
         
         try:
             lang_id = map_language(language) if language.lower() != "auto" else None
-            pdata = PromptBuilder.build_design_prompt(text, self.tokenizer, self.assets, instruct, lang_id)
+            pdata = self.prompt_builder.build_design_prompt(text, instruct, lang_id)
             
             timing = Timing()
             timing.prompt_time = pdata.compile_time
