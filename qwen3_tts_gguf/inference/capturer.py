@@ -2,7 +2,7 @@ import functools
 import types
 import numpy as np
 import torch
-from .result import TTSResult, Timing
+from .schema.result import TTSResult, Timing
 
 class OfficialCapturer:
     """

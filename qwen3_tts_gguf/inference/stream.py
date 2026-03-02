@@ -7,8 +7,8 @@ import os
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, Tuple, Union
-from .constants import PROTOCOL, map_speaker, map_language
-from .result import TTSResult, Timing, LoopOutput
+from .schema.constants import PROTOCOL, map_speaker, map_language
+from .schema.result import TTSResult, Timing, LoopOutput
 from .config import TTSConfig
 from .talker import TalkerPredictor
 from .predictor import Predictor
@@ -99,7 +99,7 @@ class TTSStream:
             lout = self._run_engine_loop(pdata, timing, cfg, streaming=streaming, chunk_size=chunk_size, verbose=verbose)
             return self._post_process(text, pdata, lout)
         except Exception as e:
-            logger.error(f"❌ Clone 推理失败: {e}")
+            logger.error(f"❌ Clone 推理失败: {e}", exc_info=True)
             print(f"❌ Clone 推理失败: {e}")
             return None
 
@@ -145,7 +145,7 @@ class TTSStream:
             lout = self._run_engine_loop(pdata, timing, cfg, streaming=streaming, chunk_size=chunk_size, verbose=verbose)
             return self._post_process(text, pdata, lout)
         except Exception as e:
-            logger.error(f"❌ Custom 推理失败: {e}")
+            logger.error(f"❌ Custom 推理失败: {e}", exc_info=True)
             return None
 
     def design(self,
@@ -184,7 +184,7 @@ class TTSStream:
             lout = self._run_engine_loop(pdata, timing, cfg, streaming=streaming, chunk_size=chunk_size, verbose=verbose)
             return self._post_process(text, pdata, lout)
         except Exception as e:
-            logger.error(f"❌ Design 推理失败: {e}")
+            logger.error(f"❌ Design 推理失败: {e}", exc_info=True)
             return None
 
     def tts(self, *args, **kwargs):

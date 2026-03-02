@@ -9,7 +9,7 @@ prompt_builder.py - Qwen3-TTS 统一提示词构造器
 import time
 import numpy as np
 from typing import Optional, List, Union
-from .constants import PROTOCOL
+from .schema.constants import PROTOCOL
 from . import logger
 
 class PromptData:

@@ -89,7 +89,7 @@ class StatefulDecoder:
         Returns:
             DecoderState: 包含初始化的状态对象
         """
-        from .protocol import DecoderState
+        from .schema.protocol import DecoderState
         
         pre_conv_history = np.zeros((1, 512, 0), dtype=self.dtype)
         latent_buffer = np.zeros((1, 1024, 0), dtype=self.dtype)
@@ -202,7 +202,7 @@ class StatefulDecoder:
 
     def _build_state_from_outputs(self, outputs) -> "DecoderState":
         """从 ONNX 输出构建 DecoderState 对象"""
-        from .protocol import DecoderState
+        from .schema.protocol import DecoderState
         
         new_state = DecoderState(
             pre_conv_history=outputs[2],

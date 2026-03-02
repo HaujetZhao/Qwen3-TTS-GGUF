@@ -10,7 +10,6 @@ from pathlib import Path
 from . import llama, logger
 from .assets import AssetsManager
 from .stream import TTSStream
-
 from .proxy import DecoderProxy
 from .encoder import CodecEncoder, SpeakerEncoder
 
@@ -88,7 +87,7 @@ class TTSEngine:
                 print(f"❌ [Engine] 引擎初始化未完全就绪 (由于解码器超时)。")
             
         except Exception as e:
-            logger.error(f"❌ 引擎初始化过程中出现致命异常: {e}")
+            logger.error(f"❌ 引擎初始化过程中出现致命异常: {e}", exc_info=True)
             self.shutdown()
 
     def __bool__(self):

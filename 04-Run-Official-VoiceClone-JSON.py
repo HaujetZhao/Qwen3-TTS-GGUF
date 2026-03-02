@@ -11,7 +11,7 @@ import types
 import traceback
 from pathlib import Path
 from export_config import MODEL_DIR
-from qwen3_tts_gguf.inference.result import TTSResult, Timing
+from qwen3_tts_gguf.inference.schema.result import TTSResult, Timing
 from qwen3_tts_gguf.inference.capturer import OfficialCapturer
 
 ROOT_DIR = Path(__file__).parent

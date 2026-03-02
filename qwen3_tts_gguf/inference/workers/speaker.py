@@ -2,7 +2,7 @@ import time
 import queue
 import numpy as np
 import sounddevice as sd
-from ..protocol import SpeakerRequest, SpeakerResponse
+from ..schema.protocol import SpeakerRequest, SpeakerResponse
 
 def handle_command(cmd: SpeakerRequest, state: dict):
     """处理来自主进程的播放指令 (仅修改物理状态)"""

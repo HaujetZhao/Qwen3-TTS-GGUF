@@ -8,7 +8,7 @@ import numpy as np
 import time
 from . import llama
 
-from .constants import PROTOCOL
+from .schema.constants import PROTOCOL
 
 class TalkerPredictor:
     """

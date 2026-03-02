@@ -1,7 +1,7 @@
 import os
 import time
 import numpy as np
-from ..protocol import DecodeRequest, DecoderResponse
+from ..schema.protocol import DecodeRequest, DecoderResponse
 
 def handle_decode_task(req: DecodeRequest, decoder, sessions, pcm_queue, record_queue=None):
     """处理单次解码任务 (顶层解耦函数)"""
@@ -41,6 +41,7 @@ def handle_decode_task(req: DecodeRequest, decoder, sessions, pcm_queue, record_
             
     except Exception as e:
         print(f"⚠️ [DecoderWorker] 解码异常: {e}")
+        traceback.print_exc()
         if req.task_id in sessions: del sessions[req.task_id]
         pcm_queue.put(DecoderResponse(msg_type="FINISH", task_id=req.task_id))
 

@@ -3,7 +3,7 @@ from typing import Union
 import numpy as np
 import onnxruntime as ort
 from . import logger
-from .result import TTSResult
+from .schema.result import TTSResult
 from .utils.mel import MelExtractor
 from .utils.audio import preprocess_audio
 
