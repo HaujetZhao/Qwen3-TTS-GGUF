@@ -20,7 +20,7 @@ class DecoderProxy:
     它负责在独立进程中拉起 DecoderWorker 和 SpeakerWorker，
     并提供线程安全的任务队列接口。
     """
-    def __init__(self, onnx_path: str, use_dml: bool = True, chunk_size: int = 8):
+    def __init__(self, onnx_path: str, use_dml: bool = True, chunk_size: int = 12):
         self.onnx_path = onnx_path
         self.use_dml = use_dml
         self.chunk_size = chunk_size
@@ -124,7 +124,17 @@ class DecoderProxy:
             
             # 如果该任务标记为实时流式播放，同步转发给播放器线路
             if self.streaming_results.get(task_id):
-                self.play_q.put(SpeakerRequest(msg_type="AUDIO", audio=msg.audio))
+                audio_to_play = msg.audio
+                
+                # 第一个包往往包含初始静音，为了播放瞬态感，自动裁掉开头的静音
+                if msg.index == 0 and audio_to_play is not None and len(audio_to_play) > 0:
+                    non_silent_idx = np.where(np.abs(audio_to_play) > 1e-4)[0]
+                    if len(non_silent_idx) > 0:
+                        start_idx = non_silent_idx[0]
+                        audio_to_play = audio_to_play[start_idx:]
+                
+                if audio_to_play is not None and len(audio_to_play) > 0:
+                    self.play_q.put(SpeakerRequest(msg_type="AUDIO", audio=audio_to_play))
 
         # A2. 收到结束信号 (闹钟)
         elif msg.msg_type == "FINISH":

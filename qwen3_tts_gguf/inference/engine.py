@@ -17,7 +17,7 @@ class TTSEngine:
     """
     Qwen3-TTS 引擎：资源池与 Stream 工厂。
     """
-    def __init__(self, model_dir="model", chunk_size=8, verbose=True):
+    def __init__(self, model_dir="model", chunk_size=12, verbose=True):
         import time
         import numpy as np
         from tokenizers import Tokenizer

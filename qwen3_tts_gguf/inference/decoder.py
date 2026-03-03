@@ -40,7 +40,7 @@ class StatefulDecoder:
     KV_CACHE_WINDOW = 72
     SAMPLES_PER_FRAME = 1920
     
-    def __init__(self, onnx_path: str, use_dml: bool = True, chunk_size: int = 8):
+    def __init__(self, onnx_path: str, use_dml: bool = True, chunk_size: int = 12):
         """
         初始化解码器。
         

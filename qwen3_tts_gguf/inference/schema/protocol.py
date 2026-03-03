@@ -15,6 +15,12 @@ class DecoderState:
     skip_samples: int = 0  # 待抵消的采样点数 (用于对齐记忆注入时的残留)
 
 @dataclass
+class DecoderSession:
+    """会话上下文：维护状态与索引"""
+    state: Optional[DecoderState] = None
+    index: int = 0
+
+@dataclass
 class DecodeRequest:
     """主进程 -> DecoderWorker"""
     task_id: Union[str, int]
@@ -28,6 +34,7 @@ class DecoderResponse:
     """DecoderWorker -> Proxy"""
     task_id: Union[str, int]
     msg_type: str = "AUDIO"   # AUDIO, FINISH, READY, ERROR
+    index: int = 0            # 当前片段在任务中的序号 (从 0 开始)
     audio: Optional[np.ndarray] = None
     compute_time: float = 0.0
     state: Optional["DecoderState"] = None  # 在 FINISH 消息中携带最终记忆
