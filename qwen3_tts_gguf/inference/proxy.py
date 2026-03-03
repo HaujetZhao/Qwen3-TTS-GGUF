@@ -240,6 +240,7 @@ class DecoderProxy:
         # 结果回写 (如果输入是对象)
         if isinstance(input, TTSResult):
             input.audio = result.audio
+            input.final_state = result.final_state
             if input.stats:
                 input.stats.decoder_compute_times = result.chunk_compute_times
         

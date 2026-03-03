@@ -12,6 +12,7 @@ class DecoderState:
     latent_buffer: Optional[np.ndarray] = None
     conv_history: Optional[np.ndarray] = None
     kv_cache: List[np.ndarray] = field(default_factory=list)
+    skip_samples: int = 0  # 待抵消的采样点数 (用于对齐记忆注入时的残留)
 
 @dataclass
 class DecodeRequest:

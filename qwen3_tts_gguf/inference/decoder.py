@@ -116,7 +116,8 @@ class StatefulDecoder:
             pre_conv_history=pre_conv_history,
             latent_buffer=latent_buffer,
             conv_history=conv_history,
-            kv_cache=kv_cache
+            kv_cache=kv_cache,
+            skip_samples=0
         )
     
     def decode(self, audio_codes: np.ndarray, state: "DecoderState" = None, is_final: bool = False):
@@ -168,6 +169,8 @@ class StatefulDecoder:
         if state is None:
             state = self.create_state()
             
+        skip_counter = state.skip_samples
+            
         # 输入规范化
         if audio_codes.ndim == 1:
              audio_codes = audio_codes.reshape(-1, 16)
@@ -207,6 +210,18 @@ class StatefulDecoder:
         # 提取有效音频
         audio = final_wav[0, :valid_samples] if valid_samples > 0 else np.array([], dtype=np.float32)
         
+        # 处理历史采样点的抵消 (用于过滤注入状态时的初始残留音频)
+        if skip_counter > 0 and len(audio) > 0:
+            if len(audio) <= skip_counter:
+                skip_counter -= len(audio)
+                audio = np.array([], dtype=np.float32)
+            else:
+                audio = audio[skip_counter:]
+                skip_counter = 0
+                
+        # 如果是任务结束，标记该状态在下次使用时需要跳过 4 帧的残留音频=
+        new_state.skip_samples = 4 * 1920 if is_final else skip_counter
+        
         return audio.astype(np.float32), new_state
 
     def _build_state_from_outputs(self, outputs) -> "DecoderState":
@@ -217,7 +232,8 @@ class StatefulDecoder:
             pre_conv_history=outputs[2],
             latent_buffer=outputs[3],
             conv_history=outputs[4],
-            kv_cache=[]
+            kv_cache=[],
+            skip_samples=0 # 默认不携带跳过计数，由外部手动设置
         )
         
         # 收集 KV Cache
