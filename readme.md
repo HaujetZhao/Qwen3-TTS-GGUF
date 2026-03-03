@@ -8,9 +8,11 @@
 
 | 源模型 | 场景 |
 | :--- | :--- |
-| Qwen3-TTS-12Hz-1.7B-Base | 零样本声音克隆 |
-| Qwen3-TTS-12Hz-1.7B-CustomVoice | 内置精品音色 + 风格指令 |
+| Qwen3-TTS-12Hz-1.7B-Base | 声音克隆 |
+| Qwen3-TTS-12Hz-1.7B-CustomVoice | 内置音色 + 风格指令 |
 | Qwen3-TTS-12Hz-1.7B-VoiceDesign | 用自然语言设计音色 |
+| Qwen3-TTS-12Hz-0.6B-Base | 声音克隆 |
+| Qwen3-TTS-12Hz-0.6B-CustomVoice | 内置音色 + 风格指令 |
 
 你想用哪个，就导出哪个，但是需要先下载官方模型才能导出。
 
@@ -22,7 +24,7 @@
 - **CPU**: RTF 1.3
 - **集显**: RTF 1.3
 
-RTF < 1 就表示生成速度比实时播放还快。
+RTF < 1 就表示生成速度比实时播放还快。没有独显的电脑，很难做到 RTF < 1，因此不太可能流畅地流式播放。
 
 显存占用：
 
@@ -38,7 +40,7 @@ RTF < 1 就表示生成速度比实时播放还快。
 
 ## 项目特性
 
-- **流式识别**：大幅缩短流式首包延迟，最低可至 300ms 内。
+- **流式识别**：大幅缩短流式实际首音延迟，最低可至 300ms 内。
 - **加速推理**：对 1.7B 模型，RTX5050 可以做到 RTF0.35，AMD 显卡也可以用 Vulkan 加速
 - **确定性控制**：支持独立设置 Talker 和 Predictor 的随机种子，确保输出可复现。
 
@@ -51,11 +53,17 @@ RTF < 1 就表示生成速度比实时播放还快。
 - [Qwen3-TTS-12Hz-1.7B-CustomVoice](https://www.modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)
 - [Qwen3-TTS-12Hz-1.7B-VoiceDesign](https://www.modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign)
 
+- [Qwen3-TTS-12Hz-0.6B-Base](https://www.modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-0.6B-Base)
+- [Qwen3-TTS-12Hz-0.6B-CustomVoice](https://www.modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice)
+
 ```
 pip install modelscope
+modelscope download --model Qwen/Qwen3-TTS-12Hz-1.7B-Base
 modelscope download --model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
 modelscope download --model Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
-modelscope download --model Qwen/Qwen3-TTS-12Hz-1.7B-Base
+
+modelscope download --model Qwen/Qwen3-TTS-12Hz-0.6B-Base
+modelscope download --model Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
 ```
 
 #### 依赖环境
@@ -138,7 +146,7 @@ python 51-Interactive-Clone.py
 from qwen3_tts_gguf import TTSEngine, TTSConfig
 
 # 初始化引擎（后台自动并行加载模型）
-engine = TTSEngine(model_dir="model-base", chunk_size=8)
+engine = TTSEngine(model_dir="model-base")
 stream = engine.create_stream()
 
 # 设置音色（支持 .wav 路径、.json 路径或 TTSResult 对象）
