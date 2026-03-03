@@ -292,9 +292,8 @@ def main():
             config=config, 
         )
         
-        result.print_stats()
+        print(f"✅ 合成成功！")
 
-        print(f"✅ 合成成功！ RTF: {result.rtf:.2f}")
         
         # 保存结果
         # 取前10个字并清理非法字符以用于文件名
@@ -304,6 +303,7 @@ def main():
         result.save(f"{save_path}.json")
         print(f"💾 已保存至: {save_path}.wav / .json")
 
+        result.print_stats()
         stream.join()
 
     engine.shutdown()
