@@ -80,33 +80,37 @@ class StatefulDecoder:
         # 获取实际使用的 provider
         self.active_provider = self.sess.get_providers()[0]
         
-        # 预热
+        # 用虚假的历史和code预热
         warmup_codes = np.zeros((self.chunk_size, 16), dtype=np.int64)
-        self.decode(warmup_codes, is_final=True)
-
+        self.decode(warmup_codes, state=self.create_state(72), is_final=True)
         logger.info(f"✅ [Decoder] 已就绪 ({self.active_provider}), 精度: {self.dtype.__name__}")
         
     
-    def create_state(self):
+    def create_state(self, hostory_num = 0):
         """
-        创建一个全新的、空的解码器状态。
+        创建一个解码器状态。可指定历史记忆数量。
         
         Returns:
             DecoderState: 包含初始化的状态对象
         """
         from .schema.protocol import DecoderState
         
-        pre_conv_history = np.zeros((1, 512, 0), dtype=self.dtype)
-        latent_buffer = np.zeros((1, 1024, 0), dtype=self.dtype)
-        conv_history = np.zeros((1, 1024, 0), dtype=self.dtype)
+        if hostory_num != 0:
+            pre_conv_history = np.zeros((1, 512, 2), dtype=self.dtype)
+            latent_buffer = np.zeros((1, 1024, 4), dtype=self.dtype)
+            conv_history = np.zeros((1, 1024, 4), dtype=self.dtype)
+        else:
+            pre_conv_history = np.zeros((1, 512, 0), dtype=self.dtype)
+            latent_buffer = np.zeros((1, 1024, 0), dtype=self.dtype)
+            conv_history = np.zeros((1, 1024, 0), dtype=self.dtype)
         
         # KV Cache: [NUM_LAYERS] 个 Key + [NUM_LAYERS] 个 Value
         kv_cache = []
         for _ in range(self.NUM_LAYERS):
             # Key
-            kv_cache.append(np.zeros((1, self.NUM_HEADS, 0, self.HEAD_DIM), dtype=self.dtype))
+            kv_cache.append(np.zeros((1, self.NUM_HEADS, max(0,hostory_num), self.HEAD_DIM), dtype=self.dtype))
             # Value 
-            kv_cache.append(np.zeros((1, self.NUM_HEADS, 0, self.HEAD_DIM), dtype=self.dtype))
+            kv_cache.append(np.zeros((1, self.NUM_HEADS, max(0,hostory_num), self.HEAD_DIM), dtype=self.dtype))
             
         return DecoderState(
             pre_conv_history=pre_conv_history,

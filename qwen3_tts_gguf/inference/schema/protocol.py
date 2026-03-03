@@ -20,6 +20,7 @@ class DecodeRequest:
     msg_type: str = "DECODE"  # DECODE, DECODE_CHUNK, STOP, RESET
     codes: Optional[np.ndarray] = None
     is_final: bool = False
+    state: Optional["DecoderState"] = None  # 用于初始化解码器状态
 
 @dataclass
 class DecoderResponse:
@@ -28,6 +29,7 @@ class DecoderResponse:
     msg_type: str = "AUDIO"   # AUDIO, FINISH, READY, ERROR
     audio: Optional[np.ndarray] = None
     compute_time: float = 0.0
+    state: Optional["DecoderState"] = None  # 在 FINISH 消息中携带最终记忆
     recv_time: float = 0.0    # Proxy 接收到消息的时间 (由 Proxy 填充)
 
 @dataclass

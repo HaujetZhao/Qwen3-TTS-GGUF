@@ -218,7 +218,9 @@ class TTSStream:
             timing.chunk_gen_times.append(time.time() - last_chunk_time); last_chunk_time = time.time()
             
             # 解码 chunk
-            self.decoder.decode(np.array(chunk_buffer), task_id=current_task_id, is_final=False, stream=streaming)
+            state = self.voice.final_state if (len(all_codes) == chunk_size and self.voice and self.voice.final_state) else None
+            self.decoder.decode(np.array(chunk_buffer), task_id=current_task_id, 
+                                is_final=False, stream=streaming, state=state)
             
             # 清空 chunk_buffer 以积累下一批
             chunk_buffer = []
@@ -227,9 +229,11 @@ class TTSStream:
 
         # 最后一个 chunk，此时 decode 会返回 DecodeResult
         timing.chunk_gen_times.append(time.time() - last_chunk_time)
+        
+        state = self.voice.final_state if (not streaming and self.voice and self.voice.final_state) else None
         decode_result = self.decoder.decode(
             np.array(chunk_buffer) if chunk_buffer else np.zeros((0, 16)), 
-            task_id=current_task_id, is_final=True, stream=streaming
+            task_id=current_task_id, is_final=True, stream=streaming, state=state
         )
         # 记录 decoder 的每一个 chunk 的耗时
         timing.decoder_compute_times = decode_result.chunk_compute_times
@@ -303,7 +307,6 @@ class TTSStream:
                 if code_0 == PROTOCOL["EOS"]:
                     break
                 
-                t_c_s = time.time()
                 
                 # ---------------- Predictor Stage ----------------
                 # 根据第 0 层码本和 Talker 隐层，预测完整的 16 层码本
@@ -342,7 +345,9 @@ class TTSStream:
             spk_emb=pdata.spk_emb,
             codes=np.array(lout.all_codes),
             summed_embeds=lout.summed_embeds,
-            stats=lout.timing
+            stats=lout.timing,
+            final_state=lout.decode_result.final_state if lout.decode_result else None,
+            ref_codes=self.voice.codes if self.voice else None
         )
 
     def reset(self):
@@ -402,6 +407,11 @@ class TTSStream:
             if res.audio is None:
                 self.engine.decode(res)
             self.engine.encode(res)
+        
+        # 如果缺少解码状态记忆 (例如从 JSON 加载)，则需要解码一遍以获得最终状态
+        if self.engine.decoder and res.final_state is None and len(res.codes) > 0:
+            logger.info("🧠 [Stream] 缺少解码器上下文记忆 (final_state)，正在执行预解码以对齐记忆...")
+            self.engine.decode(res)
 
         self.voice = res
         logger.info(f"🎭 音色已切换为: {res.text[:20]}...")

@@ -42,12 +42,21 @@ class DecodeResult:
     @property
     def chunk_compute_times(self) -> List[float]:
         """每块详细耗时"""
-        return [r.compute_time for r in self.responses]
+        return [r.compute_time for r in self.responses if r.msg_type == "AUDIO"]
 
     @property
     def first_response_time(self) -> float:
-        """第一个包返回的绝对时间点"""
-        return self.responses[0].recv_time if self.responses else 0.0
+        """第一个响应返回的绝对时间点"""
+        valid = [r for r in self.responses if r.msg_type == "AUDIO"]
+        return valid[0].recv_time if valid else 0.0
+    
+    @property
+    def final_state(self) -> Optional["DecoderState"]:
+        """从响应列表中提取最终状态"""
+        for r in reversed(self.responses):
+            if r.state is not None:
+                return r.state
+        return None
 
 
 @dataclass
@@ -129,6 +138,10 @@ class TTSResult:
     codes: np.ndarray                                  # 音频 Codec IDs，形状 (T, 16)
     spk_emb: np.ndarray                                # 全局音色向量，形状 (2048,)
 
+    # 核心记忆 (内存持久)
+    ref_codes: Optional[np.ndarray] = None             # 参考代码 (存 JSON)
+    final_state: Optional["DecoderState"] = None      # 解码后的最终记忆 (不存 JSON)
+
     # 选填
     info: str = ""                                     # 备注信息（如音色描述）
     summed_embeds: Optional[List[np.ndarray]] = None   # 音频叠加特征序列，形状 (T, 2048)
@@ -147,6 +160,8 @@ class TTSResult:
             text_ids=[],
             codes=np.empty((0, 16), dtype=np.int64),
             spk_emb=np.zeros(2048, dtype=np.float32),
+            final_state=None,
+            ref_codes=None
         )
 
     # --- 属性 ---
@@ -215,14 +230,15 @@ class TTSResult:
             logger.warning("⚠️ 当前结果不完整，无法保存为锚点。")
             return
 
-        # spk_emb 采用 fp16 + Base64 存储以节省空间
-        spk_b64 = base64.b64encode(self.spk_emb.astype(np.float16).tobytes()).decode('ascii')
+        # spk_emb 采用 fp32 + Base64 存储以节省空间
+        spk_b64 = base64.b64encode(self.spk_emb.astype(np.float32).tobytes()).decode('ascii')
 
         data = {
             "info": self.info,
             "text": self.text,
             "text_ids": self.text_ids,
             "codes": self.codes.tolist(),
+            "ref_codes": self.ref_codes.tolist() if self.ref_codes is not None else None,
             "spk_emb": spk_b64,
         }
 
@@ -285,7 +301,7 @@ class TTSResult:
         elif isinstance(spk_data, str):
             # Base64(fp16 bytes) → 解码后校验真实维度
             try:
-                spk_arr = np.frombuffer(base64.b64decode(spk_data), dtype=np.float16)
+                spk_arr = np.frombuffer(base64.b64decode(spk_data), dtype=np.float32)
             except Exception as e:
                 logger.warning(f"⚠️ 'spk_emb' Base64 解码失败: {e} at {path}")
                 return False
@@ -310,8 +326,8 @@ class TTSResult:
 
         spk_data = data["spk_emb"]
         if isinstance(spk_data, str):
-            # 新版：Base64(fp16) → fp32
-            spk_emb = np.frombuffer(base64.b64decode(spk_data), dtype=np.float16).astype(np.float32)
+            # 新版：Base64(fp32)
+            spk_emb = np.frombuffer(base64.b64decode(spk_data), dtype=np.float32)
         else:
             # 旧版：直接数组列表
             spk_emb = np.array(spk_data, dtype=np.float32)
@@ -321,6 +337,7 @@ class TTSResult:
             text_ids=data["text_ids"],
             codes=np.array(data["codes"], dtype=np.int64),
             spk_emb=spk_emb,
+            ref_codes=np.array(data["ref_codes"], dtype=np.int64) if data.get("ref_codes") is not None else None,
             info=data.get("info", ""),
         )
 

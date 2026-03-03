@@ -128,6 +128,10 @@ class DecoderProxy:
 
         # A2. 收到结束信号 (闹钟)
         elif msg.msg_type == "FINISH":
+            if task_id not in self.results:
+                self.results[task_id] = []
+            self.results[task_id].append(msg)
+            
             if task_id in self.events:
                 self.events[task_id].set()
             
@@ -169,7 +173,8 @@ class DecoderProxy:
         """阻塞等待解码器完成所有当前任务"""
         self.decoder_idle.wait(timeout=timeout)
 
-    def decode(self, input: Union[np.ndarray, TTSResult], task_id="default", is_final: bool = False, stream: bool = False) -> np.ndarray:
+    def decode(self, input: Union[np.ndarray, TTSResult], task_id="default", is_final: bool = False, 
+               stream: bool = False, state: Optional["DecoderState"] = None) -> np.ndarray:
         """
         累积式跨进程解码。
         
@@ -179,8 +184,13 @@ class DecoderProxy:
         """
         # 参数预处理
         if isinstance(input, TTSResult):
+            # 如果有参考音频切片，且当前对象没有任何记忆，先解码参考切片以对齐上下文状态
+            if input.ref_codes is not None and len(input.ref_codes) > 0 and input.final_state is None:
+                res_ref = self.decode(input.ref_codes, task_id=f"{task_id}_ref_init", is_final=True)
+                input.final_state = res_ref.final_state
+            state = state or input.final_state
             codes = input.codes
-            is_final = True # 对象解码默认为离线完成模式
+            is_final = True
         else:
             codes = input
 
@@ -205,7 +215,8 @@ class DecoderProxy:
         # 构造并发送请求
         # 对于 stream=False (离线模式)，Worker 内部会根据 msg_type="DECODE" 自动判定 is_final
         msg_type = "DECODE_CHUNK" if stream else "DECODE"
-        req = DecodeRequest(task_id=task_id, msg_type=msg_type, codes=codes, is_final=is_final)
+        req = DecodeRequest(task_id=task_id, msg_type=msg_type, codes=codes, 
+                            is_final=is_final, state=state)
         self.codes_q.put(req)
         
         # 逻辑分支 A: 中间的流式包，无需等待
