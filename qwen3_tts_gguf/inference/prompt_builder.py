@@ -9,12 +9,12 @@ prompt_builder.py - Qwen3-TTS 统一提示词构造器
 import time
 import numpy as np
 from typing import Optional, List, Union
-from .schema.constants import PROTOCOL
+from .schema.constants import PROTOCOL, map_speaker
 from . import logger
 
 class PromptData:
     """包装构建好的 Prompt Embedding 数据"""
-    def __init__(self, embd: np.ndarray, text: str, text_ids: List[int], spk_emb: np.ndarray, 
+    def __init__(self, embd: np.ndarray, text: str, text_ids: List[int], spk_emb: Optional[np.ndarray], 
                  trailing_text_embd: Optional[np.ndarray] = None, compile_time: float = 0):
         self.embd = embd # (1, seq, D) - 进入 Talker 的初始 Prompt
         self.text = text
@@ -44,16 +44,17 @@ class PromptBuilder:
         """[音色设计入口]"""
         return self._build_core(text, lang_id=lang_id, instruct=instruct)
     
-    def build_custom_prompt(self, text: str, spk_id: int, lang_id: Optional[int] = None, instruct: Optional[str] = None) -> PromptData:
+    def build_custom_prompt(self, text: str, speaker: Union[str, int, np.ndarray], 
+                            lang_id: Optional[int] = None, instruct: Optional[str] = None) -> PromptData:
         """[精品音色入口]"""
-        return self._build_core(text, lang_id=lang_id, spk_id=spk_id, instruct=instruct)
+        return self._build_core(text, lang_id=lang_id, speaker=speaker, instruct=instruct)
 
     def build_clone_prompt(self, text: str, voice, lang_id: int = None) -> PromptData:
         """[声音克隆入口]"""
         return self._build_core(
             text,
             lang_id=lang_id,
-            spk_emb=voice.spk_emb,
+            speaker=voice.spk_emb,
             ref_text=voice.text,
             codes=voice.codes,
         )
@@ -64,8 +65,7 @@ class PromptBuilder:
 
     def _build_core(self, text: str,
                     lang_id: Optional[int] = None,
-                    spk_id: Optional[int] = None,
-                    spk_emb: Optional[np.ndarray] = None,
+                    speaker: Union[str, int, np.ndarray, None] = None,
                     instruct: Optional[str] = None,
                     ref_text: Optional[str] = None,
                     ref_ids: Optional[List[int]] = None,
@@ -139,12 +139,13 @@ class PromptBuilder:
 
         # 2d. 说话人
         cur_spk_emb = None
-        if spk_emb is not None:
-            cur_spk_emb = spk_emb
-        elif spk_id is not None:
-            cur_spk_emb = self.assets.emb_tables[0][spk_id]
-        else:
-            cur_spk_emb = None
+        if isinstance(speaker, np.ndarray):
+            cur_spk_emb = speaker
+        elif speaker is not None:
+            spk_id = map_speaker(speaker)
+            if spk_id is not None:
+                cur_spk_emb = self.assets.emb_tables[0][spk_id]
+        
         if cur_spk_emb is not None:
             prefix.append(tts_pad + cur_spk_emb)
 

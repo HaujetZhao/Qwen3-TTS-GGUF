@@ -101,7 +101,7 @@ class TTSStream:
 
     def custom(self,
                text: str,
-               speaker: str,
+               speaker: Union[str, int, np.ndarray],
                language: str = "chinese",
                instruct: Optional[str] = None,
                config: Optional[TTSConfig] = None) -> Optional[TTSResult]:
@@ -110,16 +110,16 @@ class TTSStream:
 
         Args:
             text: 待合成的目标文本。
-            speaker: 内置音色名称。可选:
-                - 女性: ['Vivian', 'Serena', 'Ono_Anna', 'Sohee']
-                - 男性: ['Ryan', 'Aiden', 'Uncle_Fu', 'Eric', 'Dylan']
+            speaker: 说话人名 (str)、ID (int) 或 嵌入 (np.ndarray)。
+                - 字符串名: ['Vivian', 'Serena', 'Ono_Anna', 'Sohee', 'Ryan', 'Aiden', 'Uncle_Fu', 'Eric', 'Dylan']
+                - 数字 ID: 2800-3071
+                - 嵌入矩阵: np.ndarray (D,)
             language: 目标语言。可选:
                 - 'chinese' , 'english', 'japanese', 'korean'
                 - 'german', 'spanish', 'french', 'russian', 'italian', 'portuguese'
                 - 'beijing_dialect' , 'sichuan_dialect' 
             instruct: 渲染指令，如 "用温柔的语气说" 或 "充满活力的播报"。
             config: 推理配置对象 (TTSConfig)。
-            streaming: 是否启用流式推理。
 
         Returns:
             TTSResult 对象。
@@ -128,9 +128,8 @@ class TTSStream:
         self.talker.clear_memory()
         
         try:
-            spk_id = map_speaker(speaker)
             lang_id = map_language(language) if language.lower() != "auto" else None
-            pdata = self.prompt_builder.build_custom_prompt(text, spk_id, lang_id, instruct)
+            pdata = self.prompt_builder.build_custom_prompt(text, speaker, lang_id, instruct)
             
             timing = Timing()
             timing.prompt_time = pdata.compile_time
