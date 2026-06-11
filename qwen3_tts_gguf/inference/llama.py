@@ -448,7 +448,7 @@ class LlamaModel:
     """模型的面向对象封装"""
     def __init__(self, path, n_gpu_layers=-1, use_gpu=1):
         self.ptr = self.load_model(path, n_gpu_layers=n_gpu_layers, use_gpu=use_gpu)
-            
+
         self.vocab = llama_model_get_vocab(self.ptr)
         self.n_embd = llama_model_n_embd(self.ptr)
         self.eos_token = llama_vocab_eos(self.vocab)
@@ -456,33 +456,31 @@ class LlamaModel:
     def load_model(self, model_path: str, n_gpu_layers: int = -1, use_gpu: bool = 0):
         """
         加载 GGUF 模型（自动处理初始化和路径编码）
-        
+
         Args:
             model_path: GGUF 模型文件路径
             n_gpu_layers: 卸载到 GPU 的层数 (-1 表示全部)
             use_gpu: 是否启用 GPU (如果为 False，则强制使用 CPU)
-            
+
         Returns:
             model: llama_model 指针
         """
-        
+
         model_path = Path(model_path)
 
         model_params = llama_model_default_params()
         model_params.n_gpu_layers = n_gpu_layers
         if not use_gpu:
             model_params.devices = (ctypes.c_void_p * 1)(None)
-        
+
         model = llama_model_load_from_file(
             model_path.as_posix().encode('utf-8'),
             model_params
         )
 
-        if model:
-            return model
-        else:
-            logger.error(f"模型加载失败: {model_path}")
-            return None
+        if not model:
+            raise RuntimeError(f"llama.cpp 加载模型失败: {model_path}")
+        return model
 
     def tokenize(self, text: str, add_special: bool = False, parse_special: bool = True) -> List[int]:
         """(Native) 文本转 Token ID 列表"""
