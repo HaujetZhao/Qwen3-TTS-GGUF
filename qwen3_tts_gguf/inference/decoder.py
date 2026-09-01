@@ -16,6 +16,8 @@ decoder.py - 状态化解码器封装 (Decoder)
 """
 import os
 os.environ["OMP_NUM_THREADS"] = "4"
+import time
+from typing import Optional, Union
 import numpy as np
 from . import logger
 
@@ -291,5 +293,68 @@ class StatefulDecoder:
             "kv_cache_len": self.past_keys[0].shape[2] if self.past_keys else 0,
         }
 
+
+class LocalDecoder:
+    """
+    进程内解码器：与 DecoderProxy.decode() 同签名的同步实现，服务离线场景 (GUI/批量)。
+    无队列无监听线程，无播放相关接口 (pause/raw_play 等不支持)。
+    """
+    def __init__(self, onnx_path: str, onnx_provider: str = 'CPU', chunk_size: int = 12):
+        self._dec = StatefulDecoder(onnx_path, onnx_provider=onnx_provider, chunk_size=chunk_size)
+        self.sessions = {}  # task_id -> DecoderSession (流式多次调用间保持状态)
+        self.ready_states = {"decoder": True, "speaker": False}  # engine 打印用
+
+    def wait_until_ready(self, timeout=10):
+        return True
+
+    def decode(self, input: Union[np.ndarray, "TTSResult"], task_id="default", is_final: bool = False,
+               stream: bool = False, state: Optional["DecoderState"] = None) -> "DecodeResult":
+        """
+        同步解码。参数语义与 DecoderProxy.decode 一致：
+        TTSResult 输入时先预解码 ref_codes 对齐记忆，完成后回写 audio/final_state/耗时。
+        """
+        from .schema.protocol import DecoderSession, DecoderResponse
+        from .schema.result import TTSResult as _TTSResult, DecodeResult as _DecodeResult
+
+        if isinstance(input, _TTSResult):
+            if input.ref_codes is not None and len(input.ref_codes) > 0 and input.final_state is None:
+                res_ref = self.decode(input.ref_codes, task_id=f"{task_id}_ref_init", is_final=True)
+                input.final_state = res_ref.final_state
+            state = state or input.final_state
+            codes = input.codes
+            is_final = True
+        else:
+            codes = input
+
+        t_start = time.time()
+        codes_arr = np.asarray(codes, dtype=np.int64)
+        if codes_arr.ndim == 1:
+            codes_arr = codes_arr.reshape(-1, 16)
+
+        session = self.sessions.get(task_id)
+        curr_state = session.state if session is not None else state
+        is_task_final = is_final or not stream
+        audio, new_state = self._dec.decode(codes_arr, state=curr_state, is_final=is_task_final)
+
+        responses = [DecoderResponse(
+            task_id=task_id, msg_type="AUDIO",
+            audio=audio.copy() if len(audio) > 0 else np.array([], dtype=np.float32),
+            compute_time=time.time() - t_start)]
+        if is_task_final:
+            responses.append(DecoderResponse(task_id=task_id, msg_type="FINISH", state=new_state))
+            self.sessions.pop(task_id, None)
+        else:
+            self.sessions[task_id] = DecoderSession(state=new_state)
+
+        result = _DecodeResult(responses=responses)
+        if isinstance(input, _TTSResult):
+            input.audio = result.audio
+            input.final_state = result.final_state
+            if input.stats:
+                input.stats.decoder_compute_times = result.chunk_compute_times
+        return result
+
+    def shutdown(self):
+        self.sessions.clear()
 
 

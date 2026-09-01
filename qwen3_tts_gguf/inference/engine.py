@@ -17,7 +17,7 @@ class TTSEngine:
     """
     Qwen3-TTS 引擎：资源池与 Stream 工厂。
     """
-    def __init__(self, model_dir="model", onnx_provider="CUDA", llm_use_gpu=True, chunk_size=12, verbose=True):
+    def __init__(self, model_dir="model", onnx_provider="CUDA", llm_use_gpu=True, chunk_size=12, verbose=True, subprocess_decoder=True):
         import time
         import numpy as np
         from tokenizers import Tokenizer
@@ -62,30 +62,34 @@ class TTSEngine:
                 self.speaker_encoder = SpeakerEncoder(str(self.paths["spk_enc_onnx"]))
                 if verbose: print(f"🎤 [Engine] 编码器加载完成 (耗时: {time.time()-t_enc:.2f}s)")
 
-            # 3. 异步拉起解码器进程 (并行点 1)
+            # 3. 解码后端: 子进程 (流式播放场景) 或进程内 (GUI/离线批量场景)
             t_parallel = time.time()
-            self.decoder = DecoderProxy(str(self.paths["decoder_onnx"]), onnx_provider=onnx_provider, chunk_size=self.chunk_size)
-            if verbose: print("⏳ [Engine] 正在拉起子进程解码器...")
+            if subprocess_decoder:
+                self.decoder = DecoderProxy(str(self.paths["decoder_onnx"]), onnx_provider=onnx_provider, chunk_size=self.chunk_size)
+                if verbose: print("⏳ [Engine] 正在拉起子进程解码器...")
+            else:
+                from .decoder import LocalDecoder
+                self.decoder = LocalDecoder(str(self.paths["decoder_onnx"]), onnx_provider=onnx_provider, chunk_size=self.chunk_size)
 
             # 4. 模型引擎初始化 (并行点 2: GGUF 在主进程加载，Decoder 在子进程同时初始化)
             t_gguf = time.time()
             self._init_llama_engines(llm_use_gpu)
             if verbose: print(f"🧠 [Engine] GGUF 推理后端就绪 (耗时: {time.time()-t_gguf:.2f}s)")
-            
-            # 5. 最后同步阻塞等待解码器信号
-            is_decoder_ready = self.decoder.wait_until_ready(timeout=10)
-            if not is_decoder_ready:
-                logger.warning("⚠️ [Engine] 解码器就绪超时，渲染功能将不可用。")
-                self.ready = False
-            else:
-                if verbose: print(f"✅ [Engine] 解码器就绪: Decoder {self.decoder.ready_states['decoder']} | Speaker {self.decoder.ready_states['speaker']} (总并行初始化耗时: {time.time()-t_parallel:.2f}s)")
-                self.ready = True
-            
-            if self.ready:
-                print(f"🚀 [Engine] 引擎全链路初始化完成! 总耗时: {time.time()-t_start:.2f}s")
-            else:
-                print(f"❌ [Engine] 引擎初始化未完全就绪 (由于解码器超时)。")
-            
+
+            # 5. 子进程模式同步等待解码器信号；进程内模式天然就绪
+            if subprocess_decoder:
+                is_decoder_ready = self.decoder.wait_until_ready(timeout=10)
+                if not is_decoder_ready:
+                    logger.warning("⚠️ [Engine] 解码器就绪超时，渲染功能将不可用。")
+                    self.ready = False
+                    return
+            self.ready = True
+            if verbose:
+                mode = "子进程" if subprocess_decoder else "进程内"
+                print(f"✅ [Engine] 解码器就绪 ({mode}) (总并行初始化耗时: {time.time()-t_parallel:.2f}s)")
+
+            print(f"🚀 [Engine] 引擎全链路初始化完成! 总耗时: {time.time()-t_start:.2f}s")
+
         except Exception as e:
             logger.error(f"❌ 引擎初始化过程中出现致命异常: {e}", exc_info=True)
             self.shutdown()
