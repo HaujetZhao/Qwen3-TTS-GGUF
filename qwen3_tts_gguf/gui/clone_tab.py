@@ -87,7 +87,7 @@ class CloneTab(ttkb.Frame):
         opt_row = ttkb.Frame(group)
         opt_row.grid(row=1, column=0, columnspan=2, sticky=EW, pady=4)
         ttkb.Label(opt_row, text="上下文大小").pack(side=LEFT, padx=(0, 10))
-        self.n_ctx = tk.StringVar(value="2048")
+        self.n_ctx = tk.StringVar(value="512")
         self.n_ctx_entry = ttkb.Entry(opt_row, textvariable=self.n_ctx, width=8)
         self.n_ctx_entry.pack(side=LEFT, padx=(0, 24))
         ttkb.Label(opt_row, text="LLM 设备").pack(side=LEFT, padx=(0, 10))
@@ -236,6 +236,7 @@ class CloneTab(ttkb.Frame):
                     self._set_generating(False)
                 elif kind == "error":
                     self.log_tab.append(f"❌ {ev[1]}")
+                    self.status_var.set(f"❌ {ev[1]}")  # 错误同时上状态栏，避免"没反应"
         except queue.Empty:
             pass
         self.after(100, self._poll)
