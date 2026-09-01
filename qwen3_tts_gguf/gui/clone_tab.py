@@ -290,11 +290,15 @@ class CloneTab(ttkb.Frame):
     def _load_worker(self, model_dir, llm, onnx):
         """后台线程: 建引擎 (进程内解码器)。参数在 UI 线程读好传入。"""
         try:
+            t0 = time.time()
             eng = TTSEngine(model_dir=model_dir, onnx_provider=onnx,
                             llm_use_gpu=(llm == "GPU"), subprocess_decoder=False)
             self.engine = eng if eng else None
             self.ui_queue.put(("loaded", bool(eng)))
-            self.ui_queue.put(("status", "引擎就绪" if eng else "载入失败，详见日志"))
+            if eng:
+                self.ui_queue.put(("status", f"引擎就绪 (耗时 {time.time() - t0:.1f}s)"))
+            else:
+                self.ui_queue.put(("status", "载入失败，详见日志"))
         except Exception as e:
             self.engine = None
             logger.exception("载入失败")
@@ -354,6 +358,18 @@ class CloneTab(ttkb.Frame):
     def _gen_worker(self, engine, source, lines, language, cfg, n_ctx, n_paths, out_root):
         """后台线程: 准备锚点 -> 分批 clone_batch -> 按序号落盘 wav+json"""
         try:
+            # wav 缺参考文本: 自动改用同目录同名 .json (GUI 输出自带的锚点存档)
+            src_path = Path(source)
+            if src_path.suffix.lower() in (".wav", ".mp3", ".flac", ".m4a", ".opus"):
+                json_pair = src_path.with_suffix(".json")
+                if json_pair.exists():
+                    logger.info(f"[GUI] 克隆源 {src_path.name} 改用同名锚点存档 {json_pair.name}")
+                    source = str(json_pair)
+                else:
+                    self.ui_queue.put(("error",
+                        f"克隆源 {src_path.name} 缺少参考文本：音频克隆需同目录同名 .json "
+                        f"(生成输出自带)，或直接选用 .json 作克隆源"))
+                    return
             voice = prepare_voice(engine, engine.tokenizer, source)
             if voice is None:
                 self.ui_queue.put(("error", "克隆源准备失败，详见日志"))
@@ -363,6 +379,8 @@ class CloneTab(ttkb.Frame):
             out_dir.mkdir(parents=True, exist_ok=True)
 
             done = ok = idx = 0
+            total_frames = 0
+            t_start = time.time()
             batches = [lines[i:i + n_paths] for i in range(0, len(lines), n_paths)]
             for bi, batch in enumerate(batches):
                 if self.cancel_event.is_set():
@@ -373,10 +391,26 @@ class CloneTab(ttkb.Frame):
                 results = runner.clone_batch(tasks)
                 dt = time.time() - t0
                 frames = sum(r.codes.shape[0] for r in results if r is not None)
+                total_frames += frames
                 audio_s = frames / 12.5  # 每秒 12.5 帧
                 if frames > 0:
                     logger.info(f"[GUI] 批次 {bi + 1}/{len(batches)}: {len(batch)} 路, "
                                 f"音频 {audio_s:.1f}s, 壁钟 {dt:.2f}s, RTF {dt / audio_s:.3f}")
+                # 撞最大步数 = 未自然收束 (EOS)，该路大概率是噪声
+                n_hit = 0
+                warned = False
+                for r in results:
+                    if r is not None and r.stats.total_steps >= cfg.max_steps:
+                        n_hit += 1
+                        if not warned:  # 每批最多提示一次，避免刷屏
+                            logger.warning(f"[GUI] 该批次有路达到最大步数未自然结束 (total_steps={r.stats.total_steps})，输出可能异常")
+                            warned = True
+                if results and n_hit == len(results):
+                    # 整批全部撞顶: 克隆源大概率有问题，主动停止后续批次
+                    logger.error("[GUI] 本批全部任务达到最大步数未收束，判定克隆源异常，停止后续批次")
+                    self.ui_queue.put(("error", "克隆源异常：全部任务未自然收束，已停止后续批次"))
+                    self.cancel_event.set()
+                    break
                 for r in results:
                     idx += 1
                     if r is not None:
@@ -388,8 +422,14 @@ class CloneTab(ttkb.Frame):
                     done += 1
                     self.ui_queue.put(("progress", done, len(lines)))
 
-            state = "已停止" if self.cancel_event.is_set() else "完成"
-            self.ui_queue.put(("status", f"{state} {ok}/{len(lines)} 路 → {out_dir}"))
+            dt_total = time.time() - t_start
+            total_audio_s = total_frames / 12.5  # 每秒 12.5 帧
+            if self.cancel_event.is_set():
+                # 停止时不算 RTF，数据不完整
+                self.ui_queue.put(("status", f"已停止 {ok}/{len(lines)} 路 → {out_dir}"))
+            else:
+                rtf = f", RTF {dt_total / total_audio_s:.3f}" if total_audio_s > 0 else ""
+                self.ui_queue.put(("status", f"完成 {ok}/{len(lines)} 路{rtf} → {out_dir}"))
         except Exception as e:
             logger.exception("生成失败")
             self.ui_queue.put(("error", f"生成异常: {e}"))
@@ -397,7 +437,7 @@ class CloneTab(ttkb.Frame):
             self.ui_queue.put(("gen_done",))  # 单点: 任何结束路径都恢复按钮态
 
     def on_open_output(self):
-        path = self.output_dir.get()
+        path = os.path.abspath(self.output_dir.get())
         os.makedirs(path, exist_ok=True)  # 用户的意图就是要这个目录，不存在就建出来
         os.startfile(path)
 
