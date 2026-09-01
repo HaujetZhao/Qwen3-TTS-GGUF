@@ -311,7 +311,8 @@ class CloneTab(ttkb.Frame):
         try:
             t0 = time.time()
             eng = TTSEngine(model_dir=model_dir, onnx_provider=onnx,
-                            llm_use_gpu=(llm == "GPU"), subprocess_decoder=False)
+                            llm_use_gpu=(llm == "GPU"), subprocess_decoder=False,
+                            chunk_size=64)
             self.engine = eng if eng else None
             self.ui_queue.put(("loaded", bool(eng)))
             if eng:

@@ -20,3 +20,5 @@ soundfile
 gguf
 numpy
 scipy
+
+windnd
