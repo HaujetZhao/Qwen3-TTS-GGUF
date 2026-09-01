@@ -74,6 +74,7 @@ def main():
     print(f"  批量采样: 帧数 {[r.codes.shape[0] for r in r2]}, 耗时 {time.time()-t0:.2f}s")
     ok3 = diff_report(np.array(r2[0].codes), np.array(r2[1].codes), "采样路0", "采样路1")
     print(f"  => Phase 2 {'✅ 通过' if ok3 else '❌ 未通过'}")
+    r2[0].save("output/batch/phase2_numpy_sampled.wav")  # numpy 分块采样路径的听感样本
 
     # ---------- Phase 3: 不同文本不同种子，出音频人工试听 ----------
     print("\n========== Phase 3: 不同文本不同种子 (输出音频供试听) ==========")

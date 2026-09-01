@@ -65,6 +65,7 @@ class Timing:
     # 基础耗时 (支持列表记录，用于分析分段耗时)
     prompt_time: float = 0.0                            # 仅单次
     prefill_time: float = 0.0                           # 仅单次
+    gen_time: float = 0.0                               # 生成主循环墙钟 (批量模式记录)
     talker_loop_times:      List[float] = field(default_factory=list)
     predictor_loop_times:   List[float] = field(default_factory=list)
     chunk_gen_times:        List[float] = field(default_factory=list)

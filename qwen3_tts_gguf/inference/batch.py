@@ -17,6 +17,60 @@ from .schema.result import TTSResult, Timing
 from .prompt_builder import PromptBuilder
 
 
+class NumpyBlockSampler:
+    """
+    Predictor 批量采样器: 一次读取 (A, n_vocab) 连续 logits 块，numpy 向量化完成
+    top-k / temperature / 多项采样。语义对齐 LlamaSampler 的 temp/top_k/top_p/dist
+    无惩罚链；每路独立 RNG 流，seed 语义与原生链一致 (同种子同轨迹)。
+    要求全部路共享 sub_* 参数 (批量产数据的典型形态)，异参场景退回原生逐路采样。
+    """
+
+    def __init__(self, do_sample: bool, temperature: float, top_k: int, top_p: float,
+                 n_vocab: int):
+        self.do_sample = do_sample
+        self.temp = temperature
+        self.top_k = top_k
+        self.top_p = top_p
+        self.n_vocab = n_vocab
+
+    def sample_block(self, logits_ptr, A: int, s_off: int, e_off: int, rngs) -> np.ndarray:
+        """
+        读取 (A, n_vocab) 连续 logits 块的 [s_off, e_off) 切片，返回 A 个码。
+        rngs: 与行对齐的每路独立 RNG (调用方按任务持有，保证流跨帧连续)。
+        """
+        L = np.ctypeslib.as_array(logits_ptr, shape=(A, self.n_vocab))[:, s_off:e_off]
+
+        if not self.do_sample or self.temp <= 0:
+            return np.argmax(L, axis=1)
+
+        sl = L.astype(np.float32)
+        if 0 < self.top_k < sl.shape[1]:
+            kth = np.partition(sl, -self.top_k, axis=1)[:, self.top_k - 1]
+            sl[sl < kth[:, None]] = -np.inf
+        if self.top_p < 1.0:
+            for r in range(sl.shape[0]):  # top-p 需排序，逐路处理
+                order = np.argsort(-sl[r])
+                sorted_l = sl[r][order]
+                probs = np.exp(sorted_l - sorted_l.max())
+                cdf = np.cumsum(probs / probs.sum())
+                cut = int(np.searchsorted(cdf, self.top_p) + 1)
+                keep = np.zeros_like(sl[r], dtype=bool)
+                keep[order[:cut]] = True
+                sl[r][~keep] = -np.inf
+
+        sl /= self.temp
+        sl -= sl.max(axis=1, keepdims=True)
+        p = np.exp(sl)
+        p /= p.sum(axis=1, keepdims=True)
+        cum = np.cumsum(p, axis=1)
+
+        codes = np.empty(A, dtype=np.int64)
+        for r in range(A):
+            u = rngs[r].random()
+            codes[r] = np.searchsorted(cum[r], u, side='right')
+        return np.clip(codes, 0, sl.shape[1] - 1)
+
+
 class BatchRunner:
     """
     批量推理器。每次 clone_batch 创建本轮专用的多序列 context，跑完即释放。
@@ -76,12 +130,33 @@ class BatchRunner:
         pred_samplers = [self._create_predictor_sampler(cfg) for cfg in cfgs]
         allow_tokens = {PROTOCOL["EOS"], PROTOCOL["PAD"], PROTOCOL["BOS"]}
 
+        # 各路 sub 参数一致时启用 numpy 分块采样快路径 (异参退回原生逐路链)
+        sub_key = lambda c: (c.sub_do_sample, c.sub_temperature, c.sub_top_k, c.sub_top_p)
+        if len({sub_key(c) for c in cfgs}) == 1:
+            c0 = cfgs[0]
+            block_sampler = NumpyBlockSampler(
+                c0.sub_do_sample, c0.sub_temperature, c0.sub_top_k, c0.sub_top_p,
+                n_vocab=llama.llama_vocab_n_tokens(self.engine.predictor_model.vocab))
+            # 每路独立 RNG 流，跨帧连续 (同种子同轨迹，与原生链语义一致)
+            pred_rngs = [np.random.default_rng(
+                c.sub_seed if c.sub_seed is not None else int(time.time() * 1e9) + i)
+                for i, c in enumerate(cfgs)]
+        else:
+            block_sampler, pred_rngs = None, None
+
+        # 每帧分段耗时剖析 (累计值，秒)
+        prof = {"talker_sample": 0.0, "pred_input": 0.0, "pred_prefill": 0.0,
+                "pred_step_fill": 0.0, "pred_step_decode": 0.0, "pred_sample": 0.0,
+                "pred_embeds": 0.0, "talker_fill": 0.0, "talker_decode": 0.0, "talker_extract": 0.0}
+        self.profile = prof
+
         # 3. 批量 Prefill (各路 pos 从 0 起，长度可不同；M-RoPE 4 平面)
         t_pre = time.time()
         entries = [(pd.embd[0], 0, p) for p, pd in enumerate(prompt_datas)]
         last_idx = talker_batch.set_embd_multi(entries, pos_planes=4)
         if talker_ctx.decode(talker_batch) != 0:
             raise RuntimeError("Batch Talker Prefill decode failed")
+        self.last_prefill_tokens = talker_batch.n_tokens
         batch_idx = dict(zip(range(B), last_idx))
         for p in range(B):
             hiddens[p] = np.ctypeslib.as_array(
@@ -92,12 +167,14 @@ class BatchRunner:
 
         # 4. 逐帧 lockstep 主循环
         active = list(range(B))
+        t_gen = time.time()
         for frame in range(max(cfg.max_steps for cfg in cfgs)):
             active = [p for p in active if frame < cfgs[p].max_steps]
             if not active:
                 break
 
             # ---- Stage 1: Talker 采样 code_0 ----
+            t0 = time.time()
             code0s = {}
             for p in active:
                 code0 = talker_samplers[p].sample(
@@ -106,24 +183,28 @@ class BatchRunner:
                 talker_samplers[p].accept(code0)
                 if code0 != PROTOCOL["EOS"]:
                     code0s[p] = code0
+            prof["talker_sample"] += time.time() - t0
             active = list(code0s.keys())
             if not active:
                 break
 
             # ---- Stage 2: Predictor 批量补全 16 码 ----
             t_pred = time.time()
-            frames_out = self._predict_frames(
+            step_codes_list, audio_sum = self._predict_frames(
                 pred_ctx, pred_batch,
                 [hiddens[p] for p in active], [code0s[p] for p in active],
-                [pred_samplers[p] for p in active])
+                [pred_samplers[p] for p in active], prof,
+                block_sampler, [pred_rngs[p] for p in active] if block_sampler else None)
+            prof["pred_whole"] = prof.get("pred_whole", 0.0) + (time.time() - t_pred)
             for p in active:
                 timings[p].predictor_loop_times.append(time.time() - t_pred)
 
             # ---- Stage 3: Talker 批量吃回音频反馈 ----
             t_talk = time.time()
+            t0 = time.time()
             entries = []
-            for p, (step_codes, step_embeds) in zip(active, frames_out):
-                audio_summed = np.sum(step_embeds, axis=0)
+            for row, p in enumerate(active):
+                audio_summed = audio_sum[row]
                 pool = trailing[p]
                 if pool is not None and step_idx[p] < len(pool):
                     text_vec = pool[step_idx[p]]
@@ -132,26 +213,33 @@ class BatchRunner:
                 entries.append(((audio_summed + text_vec).reshape(1, -1), cur_pos[p], p))
 
                 step_idx[p] += 1
-                all_codes[p].append(step_codes)
+                all_codes[p].append(step_codes_list[row])
                 summed[p].append(audio_summed)
 
                 if cur_pos[p] >= self.n_ctx_per_seq - 1:
                     raise IndexError(f"[Batch] Talker context overflow at seq {p}: {cur_pos[p]}")
 
             last_idx = talker_batch.set_embd_multi(entries, pos_planes=4)
+            prof["talker_fill"] += time.time() - t0
+            t0 = time.time()
             if talker_ctx.decode(talker_batch) != 0:
                 raise RuntimeError(f"[Batch] Talker step decode failed at frame {frame}")
+            prof["talker_decode"] += time.time() - t0
+            t0 = time.time()
             batch_idx = dict(zip(active, last_idx))
             for p in active:
                 hiddens[p] = np.ctypeslib.as_array(
                     talker_ctx.get_embeddings_ith(batch_idx[p]), shape=(n_embd_t,)).copy()
                 cur_pos[p] += 1
+            prof["talker_extract"] += time.time() - t0
+            for p in active:
                 timings[p].talker_loop_times.append(time.time() - t_talk)
 
             if frame % 50 == 0:
                 logger.info(f"[Batch] 帧进度 {frame}, 活跃 {len(active)}/{B}")
 
         logger.info(f"[Batch] 生成结束: 帧数 {[len(c) for c in all_codes]}")
+        gen_time = time.time() - t_gen
 
         # 5. 收尾: 释放推理环境，解码渲染并组装结果
         for sm in talker_samplers + pred_samplers:
@@ -163,6 +251,7 @@ class BatchRunner:
             pd = prompt_datas[p]
             codes = np.array(all_codes[p]) if all_codes[p] else np.zeros((0, 16))
             timings[p].total_steps = len(all_codes[p])
+            timings[p].gen_time = gen_time
 
             dec = None
             if self.engine.decoder:
@@ -185,51 +274,72 @@ class BatchRunner:
         self.task_counter += 1
         return results
 
-    def _predict_frames(self, ctx, batch, hiddens, codes0, samplers):
+    def _predict_frames(self, ctx, batch, hiddens, codes0, samplers, prof=None,
+                        block_sampler=None, rngs=None):
         """
         批量版工匠推理: B 路 [m_hidden, code0_emb] prefill 后，15 轮 lockstep 采出 Q1-Q15。
         每帧开始整仓清 KV (B 路同生共死，无需按 seq 清理)。
-        Returns: [(step_codes[16], step_embeds_raw[16]), ...] 与输入路一一对应
+        传入 block_sampler 时走 numpy 分块采样快路径 (要求各路 sub 参数一致)，否则原生逐路链。
+        Returns: (step_codes: 每路 16 码列表, audio_sum: (路数, 2048) 各路 16 码嵌入和)
         """
-        # 1. 构造各路输入并批量 Prefill
-        entries = []
-        for h, c0 in zip(hiddens, codes0):
-            if self.assets.proj is not None:
-                m_h = h @ self.assets.proj["weight"].T + self.assets.proj["bias"]
-            else:
-                m_h = h
-            entries.append(np.stack([m_h, self.assets.get_codec_embedding_1024(0, c0)], axis=0))
+        t0 = time.time()
+        A = len(hiddens)
+        # 1. 批量构造输入 (投影合成单个 GEMM) 并 Prefill
+        H = np.stack(hiddens)
+        if self.assets.proj is not None:
+            H = H @ self.assets.proj["weight"].T + self.assets.proj["bias"]
+        codes0_arr = np.asarray(codes0, dtype=np.int64)
+        c_in = np.empty((A, 2, H.shape[1]), dtype=np.float32)
+        c_in[:, 0] = H
+        c_in[:, 1] = self.assets.emb_tables_1024[0][codes0_arr]
+        if prof is not None: prof["pred_input"] += time.time() - t0
 
+        t0 = time.time()
         ctx.clear_kv_cache()
-        last_idx = batch.set_embd_multi([(e, 0, i) for i, e in enumerate(entries)])
+        prof["pred_pf_clear"] = prof.get("pred_pf_clear", 0.0) + (time.time() - t0)
+        t0 = time.time()
+        last_idx = batch.set_embd_multi([(c_in[i], 0, i) for i in range(A)])
+        prof["pred_pf_fill"] = prof.get("pred_pf_fill", 0.0) + (time.time() - t0)
+        t0 = time.time()
         if ctx.decode(batch) != 0:
             raise RuntimeError("Batch Predictor prefill decode failed")
+        prof["pred_pf_decode"] = prof.get("pred_pf_decode", 0.0) + (time.time() - t0)
 
-        # 2. 阶梯式 15 轮: 每轮先全路采样，再全路投喂 (保持单路的逐步采样语义)
-        n_seq = len(entries)
-        step_codes = [[c0] for c0 in codes0]
-        step_embeds = [[self.assets.get_codec_embedding(0, c0).copy()] for c0 in codes0]
+        # 2. 阶梯式 15 轮: 每轮先全路采样，再全路投喂
+        step_codes = [[int(c)] for c in codes0]
+        # 16 码嵌入和直接整批累加 (花式索引一次取全路行)
+        audio_sum = self.assets.emb_tables[0][codes0_arr].astype(np.float32).copy()
 
         for cs in range(1, 16):
-            start_offset, end_offset = (cs - 1) * 2048, cs * 2048
+            s_off, e_off = (cs - 1) * 2048, cs * 2048
 
-            codes_cs = []
-            for row in range(n_seq):
-                token_id = samplers[row].sample(ctx, idx=last_idx[row],
-                                                limit_start=start_offset, limit_end=end_offset)
-                c = token_id - start_offset
-                codes_cs.append(c)
-                step_codes[row].append(c)
-                step_embeds[row].append(self.assets.get_codec_embedding(cs, c).copy())
+            t0 = time.time()
+            if block_sampler is not None:
+                codes_cs = block_sampler.sample_block(
+                    llama.llama_get_logits(ctx.ptr), A, s_off, e_off, rngs)
+            else:
+                codes_cs = np.array([
+                    samplers[row].sample(ctx, idx=idx, limit_start=s_off, limit_end=e_off) - s_off
+                    for row, idx in enumerate(last_idx)], dtype=np.int64)
+            if prof is not None: prof["pred_sample"] += time.time() - t0
+
+            t0 = time.time()
+            for row in range(A):
+                step_codes[row].append(int(codes_cs[row]))
+            audio_sum += self.assets.emb_tables[cs][codes_cs]
+            if prof is not None: prof["pred_embeds"] += time.time() - t0
 
             if cs < 15:
-                feed = [(self.assets.get_codec_embedding_1024(cs, c).reshape(1, -1), cs + 1, row)
-                        for row, c in enumerate(codes_cs)]
-                last_idx = batch.set_embd_multi(feed)
+                t0 = time.time()
+                feed = self.assets.emb_tables_1024[cs][codes_cs]
+                last_idx = batch.set_embd_multi([(feed[i], cs + 1, i) for i in range(A)])
+                if prof is not None: prof["pred_step_fill"] += time.time() - t0
+                t0 = time.time()
                 if ctx.decode(batch) != 0:
                     raise RuntimeError(f"Batch Predictor step decode failed at cs={cs}")
+                if prof is not None: prof["pred_step_decode"] += time.time() - t0
 
-        return list(zip(step_codes, step_embeds))
+        return step_codes, audio_sum
 
     def _create_talker_sampler(self, cfg: TTSConfig) -> llama.LlamaSampler:
         return llama.LlamaSampler(
