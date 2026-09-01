@@ -359,16 +359,19 @@ class LocalDecoder:
                 input.stats.decoder_compute_times = result.chunk_compute_times
         return result
 
-    def stop(self, task_id):
-        """中止任务：丢弃会话与累积响应。"""
+    def stop(self, task_id="default"):
+        """中止任务：丢弃会话与累积响应。
+
+        进程内模式无播放线路，丢弃累积音频，返回 None。
+        """
         self.sessions.pop(task_id, None)
         self._bank.pop(task_id, None)
 
-    def join_decoder(self):
+    def join_decoder(self, timeout=None):
         """同步执行，无等待语义。"""
         pass
 
-    def join_speaker(self):
+    def join_speaker(self, timeout=None):
         """同步执行，无等待语义。"""
         pass
 
