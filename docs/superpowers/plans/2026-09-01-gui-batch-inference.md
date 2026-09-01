@@ -708,12 +708,73 @@ git commit -m "GUI 克隆页接入载入/卸载（进程内解码器引擎）"
 
 ---
 
-### Task 6: GUI 生成/停止接线
+### Task 6: GUI 生成/停止接线 + 模块拆分 + 关窗编排
 
 **Files:**
-- Modify: `qwen3_tts_gguf/gui/app.py`（import 区、`on_start_stop`、新 `_gen_worker` / `_set_generating`、`on_open_output`）
+- Create: `qwen3_tts_gguf/gui/clone_tab.py`（CloneTab 整体迁入 + 生成/停止接线）
+- Create: `qwen3_tts_gguf/gui/log_tab.py`（LogTab 迁入 + 清除按钮）
+- Modify: `qwen3_tts_gguf/gui/app.py`（缩为组装层：main/样式/状态栏/QueueLogHandler/PlaceholderTab/关窗编排）
 
-- [ ] **Step 1: 补 import**
+**用户补充需求（2026-09-01）：**
+- 生成中禁用卸载按钮（需先停止生成再卸载）——`_set_generating` 已按此设计。
+- 关窗编排：生成中关窗 → 先停止生成（置 cancel + 等 worker 收尾）→ 卸载引擎 → 关闭；仅载入状态关窗 → 卸载后关闭。退出要快，worker join 设超时兜底。
+- 日志 tab 加"清除"按钮。
+- UI 拆分文件，不写一个超长 app.py。
+
+- [ ] **Step 1: 模块拆分**
+
+- `log_tab.py`：`LogTab` 迁入；顶部加按钮行（`清除` 右对齐，`command=lambda: self.text.delete("1.0", "end")`——Text 已 disabled，需在回调里临时解锁或直接绑定 delete 前 `configure(state="normal")`/后回 `disabled`，与 `append` 同法）。
+- `clone_tab.py`：`CloneTab` 整体迁入（UI 构建 + Task 5 载入逻辑 + 本任务生成逻辑）；`CLONE_SOURCE_TYPES / LANGUAGES / LLM_DEVICES / ONNX_PROVIDERS` 常量随迁。
+- `app.py` 保留：模块 docstring、`UI_SCALE / DEBUG_TOPMOST`、`pad_title`、`QueueLogHandler`、`init_style / highlight_active_tab`、`PlaceholderTab`、`main()`；顶部 `from .clone_tab import CloneTab`、`from .log_tab import LogTab`。
+- `52-GUI.py` 与 `python -m qwen3_tts_gguf.gui` 入口不变（`gui.app.main`）。
+
+- [ ] **Step 1b: 预填默认克隆源与任务文本**
+
+`_build_infer_group` 中克隆源默认值：
+
+```python
+        self.clone_source = tk.StringVar(value="output/elaborate/Vivian.json")
+```
+
+任务文本框 `self.task_text` 创建后插入默认示例（`ybar.grid` 之后）：
+
+```python
+        self.task_text.insert("1.0",
+                              "今天天气真不错，我们一起去公园走走吧。\n"
+                              "人工智能的发展速度令人惊叹，短短几年就改变了很多行业。\n"
+                              "清晨的菜市场总是热闹非凡，吆喝声此起彼伏。\n"
+                              "学习新语言最重要的是动手实践，写出第一个程序就有成就感。")
+```
+
+- [ ] **Step 1c: 关窗编排（app.py 的 main 或 CloneTab 提供 shutdown 钩子）**
+
+`main()` 中：
+
+```python
+    def on_close():
+        clone_tab.shutdown()   # 停止生成 -> 卸载引擎
+        app.destroy()
+
+    app.protocol("WM_DELETE_WINDOW", on_close)
+```
+
+`CloneTab.shutdown()`（UI 线程调用，阻塞但有限时）：
+
+```python
+    def shutdown(self):
+        """关窗前收尾: 停止生成 -> 卸载引擎。join 有超时，保证快速退出。"""
+        if self.cancel_event is not None:
+            self.cancel_event.set()
+        if self._gen_thread is not None and self._gen_thread.is_alive():
+            self._gen_thread.join(timeout=10)
+        if self.engine is not None:
+            self.engine.shutdown()
+            self.engine = None
+```
+
+（生成 worker 线程启动时存 `self._gen_thread`；join 超时后进程退出由 daemon 线程陪葬，不等待。）
+
+- [ ] **Step 2: 实现 on_start_stop / _set_generating**（替换原 `pass`）
 
 ```python
 from qwen3_tts_gguf.inference import TTSConfig
@@ -777,7 +838,8 @@ from qwen3_tts_gguf.inference.voice import prepare_voice
         self.cancel_event = threading.Event()
         self._set_generating(True)
         self.ui_queue.put(("progress", 0, len(lines)))
-        threading.Thread(target=self._gen_worker, kwargs=params, daemon=True).start()
+        self._gen_thread = threading.Thread(target=self._gen_worker, kwargs=params, daemon=True)
+        self._gen_thread.start()
 
     def _set_generating(self, on: bool):
         self.generating = on
