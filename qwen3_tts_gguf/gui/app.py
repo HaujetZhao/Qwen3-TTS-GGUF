@@ -9,6 +9,7 @@ Qwen3-TTS GGUF 图形界面（ttkbootstrap）。
 """
 import logging
 import queue
+import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
 
@@ -16,6 +17,7 @@ import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
 
 from qwen3_tts_gguf import logger
+from qwen3_tts_gguf.inference import TTSEngine
 
 UI_SCALE = 1.25        # 整体缩放系数
 DEBUG_TOPMOST = True   # 调试阶段保持窗口占据前台
@@ -211,6 +213,8 @@ class CloneTab(ttkb.Frame):
         核心约束：worker 线程只往 ui_queue 塞事件，所有 UI 控件更新都
         在这里（UI 线程）执行，禁止在其他线程直接操作 tkinter 控件。
         """
+        if not self.winfo_exists():
+            return  # 窗口已销毁，断开 after 轮询链（销毁时序处理）
         try:
             while True:
                 ev = self.ui_queue.get_nowait()
@@ -232,7 +236,10 @@ class CloneTab(ttkb.Frame):
         self.after(100, self._poll)
 
     def _set_loaded(self, ok: bool):
-        pass  # Task 5: 载入态按钮/锁定刷新
+        """载入成功: 按钮变卸载、载入区锁定；失败/卸载: 还原"""
+        self.load_btn.configure(text="卸载" if ok else "载入", state="normal")
+        for w in self._load_fields:
+            w.configure(state="disabled" if ok else "normal")
 
     def _set_generating(self, on: bool):
         pass  # Task 6: 生成态按钮切换
@@ -255,7 +262,35 @@ class CloneTab(ttkb.Frame):
             self.clone_source.set(path)
 
     def on_load_toggle(self):
-        pass
+        if self.generating:
+            return
+        if self.engine is not None:
+            self.engine.shutdown()
+            self.engine = None
+            self._set_loaded(False)
+            self.ui_queue.put(("status", "已卸载"))
+            return
+        # tkinter 变量必须在 UI 线程读——参数在此读好再传给后台线程
+        params = dict(model_dir=self.model_dir.get(),
+                      llm=self.llm_device.get(),
+                      onnx=self.onnx_provider.get())
+        self.load_btn.configure(state="disabled")
+        self.ui_queue.put(("status", "正在载入模型…"))
+        threading.Thread(target=self._load_worker, kwargs=params, daemon=True).start()
+
+    def _load_worker(self, model_dir, llm, onnx):
+        """后台线程: 建引擎 (进程内解码器)。参数在 UI 线程读好传入。"""
+        try:
+            eng = TTSEngine(model_dir=model_dir, onnx_provider=onnx,
+                            llm_use_gpu=(llm == "GPU"), subprocess_decoder=False)
+            self.engine = eng if eng else None
+            self.ui_queue.put(("loaded", bool(eng)))
+            self.ui_queue.put(("status", "引擎就绪" if eng else "载入失败，详见日志"))
+        except Exception as e:
+            self.engine = None
+            logger.exception("载入失败")
+            self.ui_queue.put(("loaded", False))
+            self.ui_queue.put(("error", f"载入异常: {e}"))
 
     def on_start_stop(self):
         pass
@@ -330,6 +365,9 @@ def main():
     progress.pack(side=RIGHT)
 
     clone_tab.bind_feedback(status_var, progress, log_tab)
+
+    # 显式接管关窗：destroy 后 _poll 由 winfo_exists 断开轮询链，避免 after 回调打到已销毁窗口
+    app.protocol("WM_DELETE_WINDOW", app.destroy)
 
     # 窗口取内容的自然尺寸（所有控件铺开到舒适状态后由 Tk 计算），不超出屏幕
     app.update_idletasks()
