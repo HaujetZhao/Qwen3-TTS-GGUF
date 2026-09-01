@@ -7,11 +7,15 @@ Qwen3-TTS GGUF 图形界面（ttkbootstrap）。
 
 克隆走批量生成，不做流式。
 """
+import logging
+import queue
 import tkinter as tk
 from tkinter import filedialog, ttk
 
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
+
+from qwen3_tts_gguf import logger
 
 UI_SCALE = 1.25        # 整体缩放系数
 DEBUG_TOPMOST = True   # 调试阶段保持窗口占据前台
@@ -32,6 +36,19 @@ def pad_title(title, width=6):
     """用全角空格把 tab 标题补到同样宽度，使三个 tab 等宽"""
     pad = width - len(title)
     return "　" * (pad // 2) + title + "　" * (pad - pad // 2)
+
+
+class QueueLogHandler(logging.Handler):
+    """把 inference 的 logger 记录转发到 GUI 事件队列 (线程安全)"""
+    def __init__(self, q: "queue.Queue"):
+        super().__init__(logging.INFO)
+        self.q = q
+
+    def emit(self, record):
+        try:
+            self.q.put(("log", record.getMessage()))
+        except Exception:
+            pass
 
 
 def init_style(root):
@@ -56,6 +73,13 @@ class CloneTab(ttkb.Frame):
         self._build_infer_group()
         self.columnconfigure(0, weight=1)
 
+        # 引擎与生成状态 (worker 线程写，UI 线程经 ui_queue 读)
+        self.engine = None
+        self.generating = False
+        self.cancel_event = None
+        self.ui_queue = queue.Queue()
+        # 载入区需随载入状态锁定的控件：由 _build_load_group 收集 (由 _set_loaded 刷新)
+
     # ---------- 载入区 ----------
 
     def _build_load_group(self):
@@ -65,23 +89,29 @@ class CloneTab(ttkb.Frame):
 
         ttkb.Label(group, text="模型文件夹").grid(row=0, column=0, sticky=W, padx=(0, 10), pady=4)
         self.model_dir = tk.StringVar(value="model-base")
-        ttkb.Entry(group, textvariable=self.model_dir).grid(row=0, column=1, sticky=EW, pady=4)
-        ttkb.Button(group, text="浏览", command=self.on_browse_model, width=14).grid(row=0, column=2, padx=(8, 0), pady=4)
+        self.model_entry = ttkb.Entry(group, textvariable=self.model_dir)
+        self.model_entry.grid(row=0, column=1, sticky=EW, pady=4)
+        browse_btn = ttkb.Button(group, text="浏览", command=self.on_browse_model, width=14)
+        browse_btn.grid(row=0, column=2, padx=(8, 0), pady=4)
 
         # 上下文 + 设备选项一行，全部从左排
         opt_row = ttkb.Frame(group)
         opt_row.grid(row=1, column=0, columnspan=2, sticky=EW, pady=4)
         ttkb.Label(opt_row, text="上下文大小").pack(side=LEFT, padx=(0, 10))
         self.n_ctx = tk.StringVar(value="2048")
-        ttkb.Entry(opt_row, textvariable=self.n_ctx, width=8).pack(side=LEFT, padx=(0, 24))
+        self.n_ctx_entry = ttkb.Entry(opt_row, textvariable=self.n_ctx, width=8)
+        self.n_ctx_entry.pack(side=LEFT, padx=(0, 24))
         ttkb.Label(opt_row, text="LLM 设备").pack(side=LEFT, padx=(0, 10))
         self.llm_device = tk.StringVar(value=LLM_DEVICES[0])
-        ttkb.Combobox(opt_row, textvariable=self.llm_device, values=LLM_DEVICES,
-                      state="readonly", width=8).pack(side=LEFT, padx=(0, 24))
+        self.llm_combo = ttkb.Combobox(opt_row, textvariable=self.llm_device, values=LLM_DEVICES,
+                                       state="readonly", width=8)
+        self.llm_combo.pack(side=LEFT, padx=(0, 24))
         ttkb.Label(opt_row, text="ONNX 组件").pack(side=LEFT, padx=(0, 10))
         self.onnx_provider = tk.StringVar(value=ONNX_PROVIDERS[0])
-        ttkb.Combobox(opt_row, textvariable=self.onnx_provider, values=ONNX_PROVIDERS,
-                      state="readonly", width=9).pack(side=LEFT)
+        self.onnx_combo = ttkb.Combobox(opt_row, textvariable=self.onnx_provider, values=ONNX_PROVIDERS,
+                                        state="readonly", width=9)
+        self.onnx_combo.pack(side=LEFT)
+        self._load_fields = [self.model_entry, self.n_ctx_entry, self.llm_combo, self.onnx_combo, browse_btn]
 
         # 文本随状态切换：未载入叫"载入"，载入后叫"卸载"（on_load_toggle 里改）
         self.load_btn = ttkb.Button(group, text="载入", command=self.on_load_toggle, width=14, bootstyle=SUCCESS)
@@ -165,6 +195,48 @@ class CloneTab(ttkb.Frame):
         ttkb.Label(bar, text="并发路数").pack(side=LEFT, padx=(0, 6))
         ttkb.Spinbox(bar, from_=1, to=32, textvariable=self.n_paths, width=5).pack(side=LEFT)
 
+    # ---------- 事件管道 ----------
+
+    def bind_feedback(self, status_var, progress, log_tab):
+        """main() 创建完状态栏与日志页后回接"""
+        self.status_var = status_var
+        self.progress = progress
+        self.log_tab = log_tab
+        logger.addHandler(QueueLogHandler(self.ui_queue))
+        self.after(100, self._poll)
+
+    def _poll(self):
+        """UI 线程: 拉取事件队列 (日志/状态/进度/按钮态)
+
+        核心约束：worker 线程只往 ui_queue 塞事件，所有 UI 控件更新都
+        在这里（UI 线程）执行，禁止在其他线程直接操作 tkinter 控件。
+        """
+        try:
+            while True:
+                ev = self.ui_queue.get_nowait()
+                kind = ev[0]
+                if kind == "log":
+                    self.log_tab.append(ev[1])
+                elif kind == "status":
+                    self.status_var.set(ev[1])
+                elif kind == "progress":
+                    self.progress.configure(maximum=ev[2], value=ev[1])
+                elif kind == "loaded":
+                    self._set_loaded(ev[1])
+                elif kind == "gen_done":
+                    self._set_generating(False)
+                elif kind == "error":
+                    self.log_tab.append(f"❌ {ev[1]}")
+        except queue.Empty:
+            pass
+        self.after(100, self._poll)
+
+    def _set_loaded(self, ok: bool):
+        pass  # Task 5: 载入态按钮/锁定刷新
+
+    def _set_generating(self, on: bool):
+        pass  # Task 6: 生成态按钮切换
+
     # ---------- 事件（功能后续再填） ----------
 
     def on_browse_model(self):
@@ -192,6 +264,28 @@ class CloneTab(ttkb.Frame):
         pass
 
 
+class LogTab(ttkb.Frame):
+    """只读日志页：显示历史日志，自动滚到底"""
+
+    def __init__(self, master):
+        super().__init__(master, padding=5)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        self.text = tk.Text(self, wrap="word", state="disabled", relief="flat",
+                            padx=6, pady=4, highlightthickness=1,
+                            highlightbackground="#c9c9c9", highlightcolor="#1a7f8e")
+        ybar = ttkb.Scrollbar(self, orient=VERTICAL, command=self.text.yview)
+        self.text.configure(yscrollcommand=ybar.set)
+        self.text.grid(row=0, column=0, sticky=NSEW)
+        ybar.grid(row=0, column=1, sticky=NS)
+
+    def append(self, line: str):
+        self.text.configure(state="normal")
+        self.text.insert("end", line + "\n")
+        self.text.see("end")
+        self.text.configure(state="disabled")
+
+
 class PlaceholderTab(ttkb.Frame):
     """占位页：自定义音色 / 音色设计"""
 
@@ -215,14 +309,27 @@ def main():
     nb = ttkb.Notebook(app)
     nb.grid(row=0, column=0, sticky=NSEW, padx=6, pady=6)
 
+    clone_tab = CloneTab(nb)
+    log_tab = LogTab(nb)
     tabs = [
-        (CloneTab(nb), "克隆"),
+        (clone_tab, "克隆"),
         (PlaceholderTab(nb, "自定义音色"), "自定义音色"),
         (PlaceholderTab(nb, "音色设计"), "音色设计"),
+        (log_tab, "日志"),
     ]
     for tab, title in tabs:
         nb.add(tab, text=pad_title(title))
     highlight_active_tab()
+
+    # 底部状态栏: 状态文字 + 进度条
+    bar = ttkb.Frame(app, padding=(12, 4))
+    bar.grid(row=1, column=0, sticky=EW)
+    status_var = tk.StringVar(value="就绪")
+    ttkb.Label(bar, textvariable=status_var).pack(side=LEFT)
+    progress = ttkb.Progressbar(bar, mode="determinate", length=240)
+    progress.pack(side=RIGHT)
+
+    clone_tab.bind_feedback(status_var, progress, log_tab)
 
     # 窗口取内容的自然尺寸（所有控件铺开到舒适状态后由 Tk 计算），不超出屏幕
     app.update_idletasks()
