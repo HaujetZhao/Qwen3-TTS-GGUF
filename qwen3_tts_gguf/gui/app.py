@@ -41,14 +41,14 @@ def pad_title(title, width=6):
 class QueueLogHandler(logging.Handler):
     """把 inference 的 logger 记录转发到 GUI 事件队列 (线程安全)"""
     def __init__(self, q: "queue.Queue"):
-        super().__init__(logging.INFO)
+        super().__init__(logging.INFO)  # GUI 只展示 INFO 及以上，debug 进文件日志
         self.q = q
 
     def emit(self, record):
         try:
             self.q.put(("log", record.getMessage()))
         except Exception:
-            pass
+            self.handleError(record)
 
 
 def init_style(root):
