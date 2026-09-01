@@ -219,7 +219,7 @@ class TTSResult:
         import soundfile as sf
         os.makedirs(os.path.dirname(os.path.abspath(path)) or '.', exist_ok=True)
         sf.write(path, self.audio, SAMPLE_RATE)
-        logger.info(f"💾 音频已保存: {path}")
+        logger.debug(f"💾 音频已保存: {path}")
 
     def save_json(self, path: str, include_audio: bool = False, include_embeds: bool = False,
                   light: bool = False, info: Optional[str] = None):

@@ -216,6 +216,8 @@ class CloneTab(ttkb.Frame):
         self.start_btn.configure(text="停止" if on else "开始生成",
                                  bootstyle=DANGER if on else PRIMARY, state="normal")
         self.load_btn.configure(state="disabled" if on else "normal")
+        if not on:
+            self.progress.configure(value=0)
 
     # ---------- 载入/卸载 ----------
 
@@ -285,19 +287,26 @@ class CloneTab(ttkb.Frame):
             self.ui_queue.put(("error", "任务文本为空")); return
 
         # tkinter 变量必须在 UI 线程读——参数在此读好再传给后台线程
-        params = dict(
-            source=source, lines=lines,
-            language=LANGUAGES[self.param_vars["language"].get()],
-            cfg=TTSConfig(
+        try:
+            cfg = TTSConfig(
                 max_steps=int(self.param_vars["max_steps"].get()),
                 temperature=float(self.param_vars["temperature"].get()),
                 seed=int(self.param_vars["seed"].get()),
                 sub_temperature=float(self.param_vars["sub_temperature"].get()),
                 sub_seed=int(self.param_vars["sub_seed"].get()),
                 streaming=False,
-            ),
-            n_ctx=int(self.n_ctx.get()),
-            n_paths=max(1, int(self.n_paths.get())),
+            )
+            n_ctx = int(self.n_ctx.get())
+            n_paths = max(1, int(self.n_paths.get()))
+        except ValueError:
+            self.ui_queue.put(("error", "参数格式有误：步数/种子须为整数，温度须为数字"))
+            return
+        params = dict(
+            source=source, lines=lines,
+            language=LANGUAGES[self.param_vars["language"].get()],
+            cfg=cfg,
+            n_ctx=n_ctx,
+            n_paths=n_paths,
             out_root=self.output_dir.get(),
         )
         self.cancel_event = threading.Event()
@@ -354,6 +363,11 @@ class CloneTab(ttkb.Frame):
             self.cancel_event.set()
         if self._gen_thread is not None and self._gen_thread.is_alive():
             self._gen_thread.join(timeout=10)
+            if self._gen_thread.is_alive():
+                # 超时说明 worker 卡在 GPU 调用上；进程即将退出，daemon 线程随之消亡，
+                # 此时再 shutdown 会与推理并发释放显存（use-after-free），放弃手动清理
+                logger.warning("[GUI] 生成线程停止超时，跳过引擎清理直接退出")
+                return
         if self.engine is not None:
             self.engine.shutdown()
             self.engine = None
