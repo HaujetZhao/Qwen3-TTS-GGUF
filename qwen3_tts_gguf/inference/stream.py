@@ -17,6 +17,7 @@ from .predictor import Predictor
 
 from . import llama, logger
 from .prompt_builder import PromptBuilder, PromptData
+from .voice import prepare_voice, AUDIO_EXTS
 
 if TYPE_CHECKING:
     from .engine import TTSEngine
@@ -385,7 +386,6 @@ class TTSStream:
     def set_voice(self, source: Union[TTSResult, str, Path], text: Optional[str] = None, **kwargs) -> Union[bool, TTSResult]:
         """统一设置当前流的音色锚点。返回生成的 TTSResult 或 False。"""
         try:
-            from .voice import prepare_voice, AUDIO_EXTS
             if isinstance(source, TTSResult):
                 res = prepare_voice(self.engine, self.tokenizer, source)
             else:
@@ -412,8 +412,10 @@ class TTSStream:
             # kwargs 包含 language, streaming 等
             res = self.custom(text, speaker_id, **kwargs)
             if res:
-                from .voice import prepare_voice
-                self.voice = prepare_voice(self.engine, self.tokenizer, res)
+                prepared = prepare_voice(self.engine, self.tokenizer, res)
+                if prepared is not None:
+                    self.voice = prepared
+                    logger.info(f"🎭 音色已切换为: {prepared.text[:20]}...")
                 return res
             return None
         except Exception as e:
