@@ -1,5 +1,5 @@
 """
-llama.cpp b9333 的 ctypes Python 绑定封装
+llama.cpp b10621 的 ctypes Python 绑定封装
 """
 
 import sys
@@ -36,19 +36,18 @@ class llama_model_params(ctypes.Structure):
         ("tensor_buft_overrides", ctypes.POINTER(ctypes.c_void_p)),
         ("n_gpu_layers", ctypes.c_int32),
         ("split_mode", ctypes.c_int32),
+        ("load_mode", ctypes.c_int32),
         ("main_gpu", ctypes.c_int32),
         ("tensor_split", ctypes.POINTER(ctypes.c_float)),
         ("progress_callback", ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_float, ctypes.c_void_p)),
         ("progress_callback_user_data", ctypes.c_void_p),
         ("kv_overrides", ctypes.POINTER(ctypes.c_void_p)),
         ("vocab_only", ctypes.c_bool),
-        ("use_mmap", ctypes.c_bool),
-        ("use_direct_io", ctypes.c_bool),
-        ("use_mlock", ctypes.c_bool),
         ("check_tensors", ctypes.c_bool),
         ("use_extra_bufts", ctypes.c_bool),
         ("no_host", ctypes.c_bool),
         ("no_alloc", ctypes.c_bool),
+        ("load_mtp", ctypes.c_bool),
     ]
 
 class llama_context_params(ctypes.Structure):
@@ -58,6 +57,8 @@ class llama_context_params(ctypes.Structure):
         ("n_ubatch", ctypes.c_uint32),
         ("n_seq_max", ctypes.c_uint32),
         ("n_rs_seq", ctypes.c_uint32),
+        ("n_outputs_max", ctypes.c_uint32),
+        ("n_outputs_max_per_seq", ctypes.c_uint32),
         ("n_threads", ctypes.c_int32),
         ("n_threads_batch", ctypes.c_int32),
         ("ctx_type", ctypes.c_int32),
@@ -87,6 +88,7 @@ class llama_context_params(ctypes.Structure):
         ("kv_unified", ctypes.c_bool),
         ("samplers", ctypes.POINTER(ctypes.c_void_p)),
         ("n_samplers", ctypes.c_size_t),
+        ("ctx_other", ctypes.c_void_p),
     ]
 
 class llama_sampler_chain_params(ctypes.Structure):
@@ -173,17 +175,7 @@ def logger_callback(level, message, user_data):
     try:
         msg_str = message.decode('utf-8', errors='replace').strip()
         if not msg_str or msg_str in ['.', '\n']: return
-        
-        if level == 2:
-            logger.error(f"[llama.cpp] {msg_str}")
-        elif level == 3:
-            logger.warning(f"[llama.cpp] {msg_str}")
-        elif level == 4:
-            logger.info(f"[llama.cpp] {msg_str}")
-        elif level >= 5:
-            logger.debug(f"[llama.cpp] {msg_str}")
-        else:
-            logger.info(f"[llama.cpp] {msg_str}")
+        logger.info(f"{msg_str}")
     except Exception as e:
         print(f"日志回调出错: {e}")
 
@@ -406,7 +398,7 @@ def bind_llama_lib():
     llama_sampler_init_min_p.restype = ctypes.c_void_p
 
     llama_sampler_init_penalties = llama.llama_sampler_init_penalties
-    llama_sampler_init_penalties.argtypes = [ctypes.c_int32, ctypes.c_float, ctypes.c_float, ctypes.c_float]
+    llama_sampler_init_penalties.argtypes = [ctypes.c_int32, ctypes.c_int32, ctypes.c_float, ctypes.c_float, ctypes.c_float]
     llama_sampler_init_penalties.restype = ctypes.c_void_p
 
     llama_sampler_accept = llama.llama_sampler_accept
@@ -703,7 +695,7 @@ class LlamaSampler:
         if has_penalty:
             # llama.cpp 会自动管理历史 rings
             llama_sampler_chain_add(self.ptr, llama_sampler_init_penalties(
-                penalty_last_n, repeat_penalty, frequency_penalty, presence_penalty
+                n_vocab, penalty_last_n, repeat_penalty, frequency_penalty, presence_penalty
             ))
 
         # 3. 采样过滤器 (顺序很重要)

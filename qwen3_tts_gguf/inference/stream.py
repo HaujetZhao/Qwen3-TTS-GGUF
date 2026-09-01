@@ -253,7 +253,8 @@ class TTSStream:
     def _create_sampler(self, do_sample: bool, temperature: float, top_p: float, top_k: int, 
                         min_p: float = 0.0, repeat_penalty: float = 1.0, 
                         frequency_penalty: float = 0.0, presence_penalty: float = 0.0,
-                        penalty_last_n: int = 128, seed: Optional[int] = None) -> llama.LlamaSampler:
+                        penalty_last_n: int = 128, seed: Optional[int] = None,
+                        n_vocab: int = 0) -> llama.LlamaSampler:
         """创建原生采样器实例"""
         return llama.LlamaSampler(
             temperature=temperature if do_sample else 0.0,
@@ -264,7 +265,8 @@ class TTSStream:
             frequency_penalty=frequency_penalty,
             presence_penalty=presence_penalty,
             penalty_last_n=penalty_last_n,
-            seed=seed
+            seed=seed,
+            n_vocab=n_vocab
         )
 
     def _run_engine_loop_gen(self, pdata: PromptData, cfg: TTSConfig, timing: Timing):
@@ -282,7 +284,8 @@ class TTSStream:
             frequency_penalty=cfg.frequency_penalty,
             presence_penalty=cfg.presence_penalty,
             penalty_last_n=cfg.penalty_last_n,
-            seed=cfg.seed
+            seed=cfg.seed,
+            n_vocab=llama.llama_vocab_n_tokens(self.engine.talker_model.vocab)
         )
         # 工匠阶段 (Predictor): 通常使用简洁采样，不应用惩罚项以保持声音稳定
         predictor_sampler = self._create_sampler(
