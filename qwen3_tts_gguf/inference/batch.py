@@ -14,7 +14,7 @@ from . import llama, logger
 from .config import TTSConfig
 from .schema.constants import PROTOCOL, map_language
 from .schema.result import TTSResult, Timing
-from .prompt_builder import PromptBuilder
+from .prompt_builder import PromptBuilder, PromptData
 
 
 class NumpyBlockSampler:
@@ -93,16 +93,65 @@ class BatchRunner:
         Returns:
             与 tasks 等长的 TTSResult 列表
         """
-        B = len(tasks)
-        n_ctx = B * self.n_ctx_per_seq
-        cfgs = [t[4] for t in tasks]
-
-        # 1. 每路独立状态 (先构建 prompt，用于确定 batch 容量)
-        n_embd_t = self.engine.talker_model.n_embd
-        prompt_datas = []
+        prepared = []
         for text, voice, language, zero_shot, cfg in tasks:
             lang_id = map_language(language) if language else None
-            prompt_datas.append(self.prompt_builder.build_clone_prompt(text, voice, lang_id, zero_shot))
+            pd = self.prompt_builder.build_clone_prompt(text, voice, lang_id, zero_shot)
+            prepared.append((text, pd, voice, cfg))
+        return self._run_batch(prepared)
+
+    def custom_batch(self, tasks: Sequence[Tuple[str, object, str, Optional[str], TTSConfig]]) -> List[Optional[TTSResult]]:
+        """
+        批量精品音色合成。
+
+        Args:
+            tasks: (text, speaker, language, instruct, config) 元组序列
+                speaker: 说话人名 (str)、ID (int) 或嵌入 (np.ndarray)，同 TTSStream.custom
+
+        Returns:
+            与 tasks 等长的 TTSResult 列表
+        """
+        prepared = []
+        for text, speaker, language, instruct, cfg in tasks:
+            lang_id = map_language(language) if language else None
+            pd = self.prompt_builder.build_custom_prompt(text, speaker, lang_id, instruct)
+            prepared.append((text, pd, None, cfg))
+        return self._run_batch(prepared)
+
+    def design_batch(self, tasks: Sequence[Tuple[str, str, str, TTSConfig]]) -> List[Optional[TTSResult]]:
+        """
+        批量音色设计合成。
+
+        Args:
+            tasks: (text, instruct, language, config) 元组序列
+
+        Returns:
+            与 tasks 等长的 TTSResult 列表
+        """
+        prepared = []
+        for text, instruct, language, cfg in tasks:
+            lang_id = map_language(language) if language else None
+            pd = self.prompt_builder.build_design_prompt(text, instruct, lang_id)
+            prepared.append((text, pd, None, cfg))
+        return self._run_batch(prepared)
+
+    def _run_batch(self, prepared: Sequence[Tuple[str, PromptData, object, TTSConfig]]) -> List[Optional[TTSResult]]:
+        """
+        批量内核。模式已在 prompt 构造时分流，此处只见统一形态的 PromptData。
+
+        Args:
+            prepared: (text, prompt_data, voice, config) 元组序列;
+                voice 仅克隆路有值 (供 decoder state / ref_codes 取用)
+
+        Returns:
+            与 prepared 等长的 TTSResult 列表
+        """
+        B = len(prepared)
+        prompt_datas = [t[1] for t in prepared]
+        cfgs = [t[3] for t in prepared]
+
+        # 1. 每路独立状态 (prompt 已构建，用于确定 batch 容量)
+        n_embd_t = self.engine.talker_model.n_embd
 
         # 2. 本轮专用的多序列推理环境
         # Talker 是 M-RoPE 模型: 每个 token 需 4 个 pos 平面，pos 缓冲按 token 槽共享，
@@ -247,7 +296,7 @@ class BatchRunner:
         del talker_batch, pred_batch, talker_ctx, pred_ctx
 
         results = []
-        for p, (text, voice, language, zero_shot, cfg) in enumerate(tasks):
+        for p, (text, pd, voice, _cfg) in enumerate(prepared):
             pd = prompt_datas[p]
             codes = np.array(all_codes[p]) if all_codes[p] else np.zeros((0, 16))
             timings[p].total_steps = len(all_codes[p])

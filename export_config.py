@@ -32,7 +32,7 @@ class Models:
     )
 
 
-model = Models.base_small
+model = Models.base
 
 MODEL_DIR  = model.source
 EXPORT_DIR = model.dest
