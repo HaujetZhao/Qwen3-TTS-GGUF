@@ -139,6 +139,7 @@ llama_decode = None
 llama_get_logits = None
 llama_get_logits_ith = None
 llama_get_embeddings = None
+llama_get_embeddings_ith = None
 llama_tokenize = None
 llama_vocab_n_tokens = None
 llama_vocab_eos = None
@@ -196,7 +197,7 @@ def bind_llama_lib():
     global llama_model_default_params, llama_model_load_from_file, llama_model_free, llama_model_get_vocab
     global llama_context_default_params, llama_init_from_model, llama_free
     global llama_batch_init, llama_batch_free, llama_batch_get_one
-    global llama_decode, llama_get_logits, llama_get_logits_ith, llama_get_embeddings, llama_tokenize
+    global llama_decode, llama_get_logits, llama_get_logits_ith, llama_get_embeddings, llama_get_embeddings_ith, llama_tokenize
     global llama_get_memory, llama_memory_clear, llama_model_n_embd
     global llama_vocab_n_tokens, llama_vocab_eos, llama_token_to_piece
     global llama_sampler_chain_default_params, llama_sampler_chain_init, llama_sampler_chain_add
@@ -316,6 +317,11 @@ def bind_llama_lib():
     llama_get_embeddings = llama.llama_get_embeddings
     llama_get_embeddings.argtypes = [ctypes.c_void_p]
     llama_get_embeddings.restype = ctypes.POINTER(ctypes.c_float)
+
+    # i 为 batch 内 token 位置 (正值)，-1 为最后一个输出 token
+    llama_get_embeddings_ith = llama.llama_get_embeddings_ith
+    llama_get_embeddings_ith.argtypes = [ctypes.c_void_p, ctypes.c_int32]
+    llama_get_embeddings_ith.restype = ctypes.POINTER(ctypes.c_float)
 
     # Tokenize
     llama_tokenize = llama.llama_tokenize
@@ -563,6 +569,10 @@ class LlamaContext:
     def get_embeddings(self):
         return llama_get_embeddings(self.ptr)
 
+    def get_embeddings_ith(self, i: int):
+        """获取 Batch 中第 i 个 Token 的 Embedding 输出"""
+        return llama_get_embeddings_ith(self.ptr, i)
+
     def clear_kv_cache(self):
         mem = llama_get_memory(self.ptr)
         llama_memory_clear(mem, True)
@@ -643,6 +653,65 @@ class LlamaBatch:
             self.logits[i] = 1 if i == n_tokens - 1 else 0
         
         return self
+
+    def set_embd_multi(self, entries, pos_planes: int = 1):
+        """
+        多序列批量填充 (ragged batch，无需对齐填充)。
+
+        Args:
+            entries: [(data, pos_start, seq_id), ...] 列表
+                - data: 单路 Embedding 数据 [n_i, dim]
+                - pos_start: 该路起始位置，entry 内位置线性递增
+                - seq_id: 该路序列 ID
+            pos_planes: 每个 token 的位置平面数 (M-RoPE 模型为 4，常规为 1)。
+                平面式内存布局: [plane0(n_total), plane1(n_total), ...]
+                (llama.cpp 对 embd 输入按 j*batch.n_tokens 偏移读各平面)
+                Qwen3-TTS Talker 约定: 前 3 平面填 pos，末平面填 0。
+            每条 entry 的最后一个 token 置 logits 输出标志 (embeddings ctx 不受此限，恒全量输出)。
+
+        Returns:
+            last_idx: 每条 entry 最后一个 token 在 batch 中的位置索引列表，
+                      供后续 get_logits_ith / get_embeddings_ith / sampler.sample 使用。
+        """
+        datas = []
+        for data, _, _ in entries:
+            data = np.ascontiguousarray(data, dtype=np.float32)
+            if data.ndim == 1:
+                data = data.reshape(1, -1)
+            datas.append(data)
+
+        n_total = sum(d.shape[0] for d in datas)
+        if n_total * pos_planes > self.n_tokens_max:
+            raise ValueError(f"Batch 空间不足: {n_total}*{pos_planes} > {self.n_tokens_max}")
+
+        # 1. Embedding 拼接拷贝
+        merged = np.concatenate(datas, axis=0) if len(datas) > 1 else datas[0]
+        ctypes.memmove(self.embd, merged.ctypes.data, merged.nbytes)
+
+        # 2. 位置 (平面式) / 序列 / 输出标志
+        pos = np.ctypeslib.as_array(self.pos, shape=(n_total * pos_planes,))
+        pos[:] = 0
+        n_seq_id = np.ctypeslib.as_array(self.n_seq_id, shape=(n_total,))
+        logits = np.ctypeslib.as_array(self.logits, shape=(n_total,))
+        logits[:] = 0
+
+        last_idx = []
+        i = 0
+        n_fill = 1 if pos_planes == 1 else pos_planes - 1  # Talker 约定: 末平面置 0，其余填 pos
+        for data, pos_start, seq_id in [(d, e[1], e[2]) for d, e in zip(datas, entries)]:
+            n = data.shape[0]
+            seg = np.arange(pos_start, pos_start + n, dtype=np.int32)
+            for j in range(n_fill):
+                pos[j*n_total + i : j*n_total + i + n] = seg
+            n_seq_id[i:i+n] = 1
+            for j in range(i, i + n):
+                self.seq_id[j][0] = seq_id
+            logits[i + n - 1] = 1
+            last_idx.append(i + n - 1)
+            i += n
+
+        self.n_tokens = n_total
+        return last_idx
 
     def __del__(self):
         if hasattr(self, 'struct'):
