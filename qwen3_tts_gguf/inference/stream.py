@@ -17,7 +17,6 @@ from .predictor import Predictor
 
 from . import llama, logger
 from .prompt_builder import PromptBuilder, PromptData
-from .utils.audio import load_audio
 
 if TYPE_CHECKING:
     from .engine import TTSEngine
@@ -386,86 +385,24 @@ class TTSStream:
     def set_voice(self, source: Union[TTSResult, str, Path], text: Optional[str] = None, **kwargs) -> Union[bool, TTSResult]:
         """统一设置当前流的音色锚点。返回生成的 TTSResult 或 False。"""
         try:
-            success = False
+            from .voice import prepare_voice, AUDIO_EXTS
             if isinstance(source, TTSResult):
-                success = self._set_voice_from_result(source)
+                res = prepare_voice(self.engine, self.tokenizer, source)
             else:
-                source_p = Path(source)
-                if source_p.suffix.lower() == ".json":
-                    success = self._set_voice_from_json(source_p)
-                elif source_p.suffix.lower() in [".wav", ".mp3", ".flac", ".m4a", ".opus"]:
-                    success = self._set_voice_from_audio(source_p, text or "", **kwargs)
+                p = Path(source)
+                if p.suffix.lower() == ".json" or p.suffix.lower() in AUDIO_EXTS:
+                    res = prepare_voice(self.engine, self.tokenizer, p, text)
                 else:
                     # 尝试作为内置说话人处理
                     return self.set_voice_from_speaker(str(source), text or "你好", **kwargs)
-            
-            return self.voice if success else False
+
+            if res is None:
+                return False
+            self.voice = res
+            logger.info(f"🎭 音色已切换为: {res.text[:20]}...")
+            return res
         except Exception as e:
             logger.error(f"❌ 设置音色时出现无法预料的异常: {e}")
-            print(f"❌ 设置音色时出现无法预料的异常: {e}")
-            return False
-
-    def _set_voice_from_result(self, res: TTSResult) -> bool:
-        if not res.is_valid_anchor:
-            return False
-
-        # 如果缺少音色向量但存在 codes，解码音频后提取
-        if res.spk_emb is None and len(res.codes) > 0:
-            logger.info("🎤 [Stream] 音色向量缺失，正在从 codes 解码音频并提取...")
-            if res.audio is None:
-                res.audio = self.engine.decode(res.codes)
-            self.engine.encode(res)
-
-        # 如果维度不匹配，执行重编码转换
-        if res.spk_emb is not None and res.spk_emb.shape[-1] != self.engine.talker_model.n_embd:
-            logger.info(f"🔄 [Stream] 维度不匹配 ({res.spk_emb.shape[-1]}->{self.engine.talker_model.n_embd})，正在转换...")
-            if res.audio is None:
-                self.engine.decode(res)
-            self.engine.encode(res)
-        
-        # 如果缺少解码状态记忆 (例如从 JSON 加载)，则需要解码一遍以获得最终状态
-        if self.engine.decoder and res.final_state is None and len(res.codes) > 0:
-            logger.info("🧠 [Stream] 缺少解码器上下文记忆 (final_state)，正在执行预解码以对齐记忆...")
-            self.engine.decode(res)
-
-        self.voice = res
-        logger.info(f"🎭 音色已切换为: {res.text[:20]}...")
-        return True
-
-    def _set_voice_from_json(self, path: Path) -> bool:
-        """从 JSON 文件恢复音色锚点"""
-        if not path.exists():
-            logger.error(f"❌ 未找到音色 JSON 文件: {path}")
-            return False
-        try:
-            res = TTSResult.from_json(str(path))
-            return self._set_voice_from_result(res)
-        except Exception as e:
-            logger.error(f"❌ 解析音色 JSON 失败 ({path.name}): {e}")
-            return False
-
-    def _set_voice_from_audio(self, wav_path: Path, text: str) -> bool:
-        """从音频文件克隆音色：使用 pydub 标准化输入"""
-        if self.engine.codec_encoder is None or self.engine.speaker_encoder is None:
-            logger.error("⚠️ 编码器模块未加载，无法执行音色克隆。")
-            return False
-            
-        logger.info(f"🎤 正在从音频提取音色特征: {wav_path.name}")
-        
-        # 1. 万能格式转换与预处理 (24kHz, Mono, float32)
-        samples = load_audio(wav_path)
-        if samples is None:
-            return False
-            
-        # 2. 推理提取特征 (直接传入内存 samples，不再依赖临时文件)
-        try:
-            codes = self.engine.codec_encoder.encode(samples)
-            spk_emb = self.engine.speaker_encoder.encode(samples)
-            
-            res = TTSResult(text=text, text_ids=self.tokenizer.encode(text).ids, spk_emb=spk_emb, codes=codes)
-            return self._set_voice_from_result(res)
-        except Exception as e:
-            logger.error(f"❌ 音声特征提取失败: {e}")
             return False
 
     def set_voice_from_speaker(self, speaker_id: str, text: str, **kwargs) -> Optional[TTSResult]:
@@ -475,7 +412,8 @@ class TTSStream:
             # kwargs 包含 language, streaming 等
             res = self.custom(text, speaker_id, **kwargs)
             if res:
-                self._set_voice_from_result(res)
+                from .voice import prepare_voice
+                self.voice = prepare_voice(self.engine, self.tokenizer, res)
                 return res
             return None
         except Exception as e:
