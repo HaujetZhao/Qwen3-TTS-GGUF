@@ -112,8 +112,8 @@ class CloneTab(ttkb.Frame):
         group = ttkb.Labelframe(self, text="推理", padding=8)
         group.grid(row=1, column=0, sticky=NSEW, pady=(10, 0))
         group.columnconfigure(1, weight=1)
-        group.rowconfigure(1, weight=1)  # 多余空间全部给任务文本框
         self.rowconfigure(1, weight=1)
+        group.rowconfigure(2, weight=1)  # 多余空间全部给任务文本框
 
         # 克隆源
         ttkb.Label(group, text="克隆源").grid(row=0, column=0, sticky=W, padx=(0, 10), pady=4)
@@ -123,9 +123,14 @@ class CloneTab(ttkb.Frame):
         _hook_drop_file(source_entry, self.clone_source)
         ttkb.Button(group, text="选择克隆源", command=self.on_pick_source, width=14).grid(row=0, column=2, padx=(8, 0), pady=4)
 
+        # 参考文本: 音频克隆源的转写；留空则零样本克隆 (json 源自带转写，忽略此框)
+        ttkb.Label(group, text="参考文本", width=12).grid(row=1, column=0, sticky=W, padx=(0, 10), pady=4)
+        self.ref_text = tk.StringVar()
+        ttkb.Entry(group, textvariable=self.ref_text).grid(row=1, column=1, columnspan=2, sticky=EW, pady=4)
+
         # 任务文本
         text_group = ttkb.Labelframe(group, text="输入文本（每行一个任务，多路批量生成，# 开头为注释）", padding=5)
-        text_group.grid(row=1, column=0, columnspan=3, sticky=NSEW, pady=(8, 3))
+        text_group.grid(row=2, column=0, columnspan=3, sticky=NSEW, pady=(8, 3))
         text_group.columnconfigure(0, weight=1)
         text_group.rowconfigure(0, weight=1)
         self.task_text = tk.Text(text_group, height=14, wrap="none", relief="flat",
@@ -142,19 +147,19 @@ class CloneTab(ttkb.Frame):
                               "学习新语言最重要的是动手实践，写出第一个程序就有成就感。")
 
         # 输出文件夹
-        ttkb.Label(group, text="输出文件夹").grid(row=2, column=0, sticky=W, padx=(0, 10), pady=4)
+        ttkb.Label(group, text="输出文件夹").grid(row=3, column=0, sticky=W, padx=(0, 10), pady=4)
         self.output_dir = tk.StringVar(value="./output/clone")
         output_entry = ttkb.Entry(group, textvariable=self.output_dir)
-        output_entry.grid(row=2, column=1, sticky=EW, pady=4)
+        output_entry.grid(row=3, column=1, sticky=EW, pady=4)
         _hook_drop_folder(output_entry, self.output_dir)
-        ttkb.Button(group, text="浏览", command=self.on_browse_output, width=14).grid(row=2, column=2, padx=(8, 0), pady=4)
+        ttkb.Button(group, text="浏览", command=self.on_browse_output, width=14).grid(row=3, column=2, padx=(8, 0), pady=4)
 
         self._build_param_grid(group)
         self._build_control_row(group)
 
     def _build_param_grid(self, group):
         pg = ttkb.Labelframe(group, text="参数", padding=8)
-        pg.grid(row=3, column=0, columnspan=3, sticky=EW, pady=8)
+        pg.grid(row=4, column=0, columnspan=3, sticky=EW, pady=8)
         # 三个输入列平分窗口变宽多出的空间
         for col in (1, 3, 5):
             pg.columnconfigure(col, weight=1)
@@ -184,7 +189,7 @@ class CloneTab(ttkb.Frame):
 
     def _build_control_row(self, group):
         bar = ttkb.Frame(group)
-        bar.grid(row=4, column=0, columnspan=3, sticky=EW)
+        bar.grid(row=5, column=0, columnspan=3, sticky=EW)
         self.start_btn = ttkb.Button(bar, text="开始生成", command=self.on_start_stop, width=14,
                                      bootstyle=PRIMARY, state="disabled")  # 引擎载入前不可生成
         self.start_btn.pack(side=RIGHT)
@@ -342,6 +347,7 @@ class CloneTab(ttkb.Frame):
             return
         params = dict(
             source=source, lines=lines,
+            ref_text=self.ref_text.get().strip(),
             language=LANGUAGES[self.param_vars["language"].get()],
             cfg=cfg,
             n_ctx=n_ctx,
@@ -355,22 +361,30 @@ class CloneTab(ttkb.Frame):
         self._gen_thread = threading.Thread(target=self._gen_worker, kwargs=params, daemon=True)
         self._gen_thread.start()
 
-    def _gen_worker(self, engine, source, lines, language, cfg, n_ctx, n_paths, out_root):
+    def _gen_worker(self, engine, source, lines, ref_text, language, cfg, n_ctx, n_paths, out_root):
         """后台线程: 准备锚点 -> 分批 clone_batch -> 按序号落盘 wav+json"""
         try:
-            # wav 缺参考文本: 自动改用同目录同名 .json (GUI 输出自带的锚点存档)
+            # 克隆源分流: json 自带转写；音频源按参考文本定模式
+            zero_shot = False
             src_path = Path(source)
-            if src_path.suffix.lower() in (".wav", ".mp3", ".flac", ".m4a", ".opus"):
-                json_pair = src_path.with_suffix(".json")
-                if json_pair.exists():
-                    logger.info(f"[GUI] 克隆源 {src_path.name} 改用同名锚点存档 {json_pair.name}")
-                    source = str(json_pair)
-                else:
-                    self.ui_queue.put(("error",
-                        f"克隆源 {src_path.name} 缺少参考文本：音频克隆需同目录同名 .json "
-                        f"(生成输出自带)，或直接选用 .json 作克隆源"))
-                    return
-            voice = prepare_voice(engine, engine.tokenizer, source)
+            if src_path.suffix.lower() == ".json":
+                if ref_text:
+                    logger.info("[GUI] json 克隆源自带转写，忽略参考文本框")
+            elif src_path.suffix.lower() in (".wav", ".mp3", ".flac", ".m4a", ".opus"):
+                if not ref_text:
+                    json_pair = src_path.with_suffix(".json")
+                    if json_pair.exists():
+                        # 有同名锚点存档: 用它做普通克隆 (带转写，效果优于零样本)
+                        logger.info(f"[GUI] 参考文本为空，改用同名锚点存档 {json_pair.name}")
+                        source = str(json_pair)
+                    else:
+                        logger.info("[GUI] 参考文本为空，走零样本克隆 (仅用音色向量)")
+                        zero_shot = True
+            else:
+                self.ui_queue.put(("error", f"不支持的克隆源类型: {src_path.suffix}"))
+                return
+            voice = prepare_voice(engine, engine.tokenizer, source,
+                                  text=ref_text if (not zero_shot and src_path.suffix.lower() != ".json") else None)
             if voice is None:
                 self.ui_queue.put(("error", "克隆源准备失败，详见日志"))
                 return
@@ -387,7 +401,7 @@ class CloneTab(ttkb.Frame):
                     break
                 self.ui_queue.put(("status", f"批次 {bi + 1}/{len(batches)}（{len(batch)} 路）生成中…"))
                 t0 = time.time()
-                tasks = [(text, voice, language, False, cfg) for text in batch]
+                tasks = [(text, voice, language, zero_shot, cfg) for text in batch]
                 results = runner.clone_batch(tasks)
                 dt = time.time() - t0
                 frames = sum(r.codes.shape[0] for r in results if r is not None)
