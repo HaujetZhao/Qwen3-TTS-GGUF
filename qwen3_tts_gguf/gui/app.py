@@ -7,8 +7,6 @@ Qwen3-TTS GGUF 图形界面（ttkbootstrap）——组装层。
 
 克隆走批量生成，不做流式。页面实现拆在 clone_tab / log_tab，此处只做样式与组装。
 """
-import logging
-import queue
 import tkinter as tk
 
 import ttkbootstrap as ttkb
@@ -25,19 +23,6 @@ def pad_title(title, width=6):
     """用全角空格把 tab 标题补到同样宽度，使四个 tab 等宽"""
     pad = width - len(title)
     return "　" * (pad // 2) + title + "　" * (pad - pad // 2)
-
-
-class QueueLogHandler(logging.Handler):
-    """把 inference 的 logger 记录转发到 GUI 事件队列 (线程安全)"""
-    def __init__(self, q: "queue.Queue"):
-        super().__init__(logging.INFO)  # GUI 只展示 INFO 及以上，debug 进文件日志
-        self.q = q
-
-    def emit(self, record):
-        try:
-            self.q.put(("log", record.getMessage()))
-        except Exception:
-            self.handleError(record)
 
 
 def init_style(root):

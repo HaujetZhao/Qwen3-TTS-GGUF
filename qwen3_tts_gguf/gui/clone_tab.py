@@ -15,6 +15,8 @@ from qwen3_tts_gguf.inference import TTSEngine, TTSConfig
 from qwen3_tts_gguf.inference.batch import BatchRunner
 from qwen3_tts_gguf.inference.voice import prepare_voice
 
+from .log_tab import QueueLogHandler
+
 # 克隆源支持的文件类型
 CLONE_SOURCE_TYPES = [("克隆源", "*.wav *.json"), ("所有文件", "*.*")]
 
@@ -171,8 +173,6 @@ class CloneTab(ttkb.Frame):
         self.status_var = status_var
         self.progress = progress
         self.log_tab = log_tab
-        # QueueLogHandler 留在组装层 app.py，此处局部导入避免循环依赖 (app -> clone_tab -> app)
-        from qwen3_tts_gguf.gui.app import QueueLogHandler
         logger.addHandler(QueueLogHandler(self.ui_queue))
         self.after(100, self._poll)
 
@@ -313,7 +313,6 @@ class CloneTab(ttkb.Frame):
             if voice is None:
                 self.ui_queue.put(("error", "克隆源准备失败，详见日志"))
                 return
-
             runner = BatchRunner(self.engine, n_ctx_per_seq=n_ctx, cancel_event=self.cancel_event)
             out_dir = Path(out_root) / datetime.now().strftime("%Y%m%d-%H%M%S")
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -338,10 +337,11 @@ class CloneTab(ttkb.Frame):
 
             state = "已停止" if self.cancel_event.is_set() else "完成"
             self.ui_queue.put(("status", f"{state} {ok}/{len(lines)} 路 → {out_dir}"))
-            self.ui_queue.put(("gen_done",))
         except Exception as e:
             logger.exception("生成失败")
             self.ui_queue.put(("error", f"生成异常: {e}"))
+        finally:
+            self.ui_queue.put(("gen_done",))  # 单点: 任何结束路径都恢复按钮态
 
     def on_open_output(self):
         path = self.output_dir.get()

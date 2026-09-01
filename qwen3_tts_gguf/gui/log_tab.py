@@ -1,8 +1,23 @@
-"""日志页：只读日志 Text，自动滚到底，带清除按钮。"""
+"""日志页：只读日志 Text，自动滚到底，带清除按钮。日志管道 QueueLogHandler 也归此模块。"""
+import logging
+import queue
 import tkinter as tk
 
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
+
+
+class QueueLogHandler(logging.Handler):
+    """把 inference 的 logger 记录转发到 GUI 事件队列 (线程安全)"""
+    def __init__(self, q: "queue.Queue"):
+        super().__init__(logging.INFO)  # GUI 只展示 INFO 及以上，debug 进文件日志
+        self.q = q
+
+    def emit(self, record):
+        try:
+            self.q.put(("log", record.getMessage()))
+        except Exception:
+            self.handleError(record)
 
 
 class LogTab(ttkb.Frame):
