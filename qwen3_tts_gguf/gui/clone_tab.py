@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
 
+import sounddevice as sd
 import ttkbootstrap as ttkb
 import windnd
 from ttkbootstrap.constants import *
@@ -15,6 +16,9 @@ from ttkbootstrap.constants import *
 from qwen3_tts_gguf import logger
 from qwen3_tts_gguf.inference import TTSEngine, TTSConfig
 from qwen3_tts_gguf.inference.batch import BatchRunner
+from qwen3_tts_gguf.inference.schema.constants import SAMPLE_RATE
+from qwen3_tts_gguf.inference.schema.result import TTSResult
+from qwen3_tts_gguf.inference.utils.audio import load_audio
 from qwen3_tts_gguf.inference.voice import prepare_voice
 
 from .log_tab import PrintRedirect, QueueLogHandler
@@ -122,11 +126,15 @@ class CloneTab(ttkb.Frame):
         source_entry.grid(row=0, column=1, sticky=EW, pady=4)
         _hook_drop_file(source_entry, self.clone_source)
         ttkb.Button(group, text="选择克隆源", command=self.on_pick_source, width=14).grid(row=0, column=2, padx=(8, 0), pady=4)
+        self.clone_source.trace_add("write", lambda *_: self._refresh_play_btn())
 
         # 参考文本: 音频克隆源的转写；留空则零样本克隆 (json 源自带转写，忽略此框)
         ttkb.Label(group, text="参考文本", width=12).grid(row=1, column=0, sticky=W, padx=(0, 10), pady=4)
         self.ref_text = tk.StringVar()
-        ttkb.Entry(group, textvariable=self.ref_text).grid(row=1, column=1, columnspan=2, sticky=EW, pady=4)
+        ttkb.Entry(group, textvariable=self.ref_text).grid(row=1, column=1, sticky=EW, pady=4)
+        # json 源须先经引擎解码，未载入时不可播放；音频源直接播
+        self.play_btn = ttkb.Button(group, text="播放克隆源", command=self.on_play_source, width=14, state="disabled")
+        self.play_btn.grid(row=1, column=2, padx=(8, 0), pady=4)
 
         # 任务文本
         text_group = ttkb.Labelframe(group, text="输入文本（每行一个任务，多路批量生成，# 开头为注释）", padding=5)
@@ -247,6 +255,8 @@ class CloneTab(ttkb.Frame):
                     self._set_loaded(ev[1])
                 elif kind == "gen_done":
                     self._set_generating(False)
+                elif kind == "play_done":
+                    self._refresh_play_btn()
                 elif kind == "error":
                     self.log_tab.append(f"❌ {ev[1]}")
                     self.status_var.set(f"❌ {ev[1]}")  # 错误同时上状态栏，避免"没反应"
@@ -261,6 +271,14 @@ class CloneTab(ttkb.Frame):
             w.configure(state="disabled" if ok else "normal")
         # 生成按钮只在引擎就绪时可用；失败/卸载后禁用
         self.start_btn.configure(state="normal" if ok else "disabled")
+        self._refresh_play_btn()
+
+    def _refresh_play_btn(self):
+        """播放按钮：有源即可播音频；json 源须引擎已载入 (要 decode)"""
+        src = self.clone_source.get().strip()
+        is_json = src.lower().endswith(".json")
+        ok = bool(src) and (not is_json or self.engine is not None)
+        self.play_btn.configure(state="normal" if ok else "disabled")
 
     def _set_generating(self, on: bool):
         """生成中: 开始变停止、卸载按钮禁用（须先停止再卸载）"""
@@ -287,6 +305,37 @@ class CloneTab(ttkb.Frame):
         path = filedialog.askopenfilename(title="选择克隆源 (.wav / .json)", filetypes=CLONE_SOURCE_TYPES)
         if path:
             self.clone_source.set(path)
+
+    def on_play_source(self):
+        source = self.clone_source.get().strip()
+        if Path(source).suffix.lower() == ".json":
+            # 解码要跑 ONNX，放后台线程，播完/失败后经 play_done 恢复按钮态
+            self.play_btn.configure(state="disabled")
+            self.ui_queue.put(("status", "正在解码克隆源音频…"))
+            threading.Thread(target=self._play_worker, args=(source,), daemon=True).start()
+        else:
+            try:
+                audio = load_audio(source, SAMPLE_RATE)
+            except Exception as e:
+                self.ui_queue.put(("error", f"读取克隆源音频失败: {e}"))
+                return
+            sd.play(audio, samplerate=SAMPLE_RATE)
+            self.ui_queue.put(("status", f"正在播放 {Path(source).name}"))
+
+    def _play_worker(self, source):
+        try:
+            res = TTSResult.from_json(source)
+            self.engine.decode(res)  # 回写 res.audio
+            if res.audio is None or len(res.audio) == 0:
+                self.ui_queue.put(("error", "克隆源 JSON 无可播放的音频数据"))
+                return
+            res.play(blocking=False)
+            self.ui_queue.put(("status", "正在播放克隆源音频"))
+        except Exception as e:
+            logger.exception("解码克隆源失败")
+            self.ui_queue.put(("error", f"解码克隆源失败: {e}"))
+        finally:
+            self.ui_queue.put(("play_done",))
 
     def on_load_toggle(self):
         if self.generating:
