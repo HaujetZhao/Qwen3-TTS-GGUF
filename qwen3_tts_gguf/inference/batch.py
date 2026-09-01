@@ -76,10 +76,11 @@ class BatchRunner:
     批量推理器。每次 clone_batch 创建本轮专用的多序列 context，跑完即释放。
     """
 
-    def __init__(self, engine, n_ctx_per_seq: int = 2048):
+    def __init__(self, engine, n_ctx_per_seq: int = 2048, cancel_event=None):
         self.engine = engine
         self.assets = engine.assets
         self.n_ctx_per_seq = n_ctx_per_seq
+        self.cancel_event = cancel_event  # threading.Event；置位后当前批整批丢弃
         self.prompt_builder = PromptBuilder(engine.tokenizer, engine.assets)
         self.task_counter = 0
 
@@ -175,125 +176,148 @@ class BatchRunner:
         summed = [[] for _ in range(B)]
         timings = [Timing(prompt_time=pd.compile_time) for pd in prompt_datas]
 
-        talker_samplers = [self._create_talker_sampler(cfg) for cfg in cfgs]
-        pred_samplers = [self._create_predictor_sampler(cfg) for cfg in cfgs]
-        allow_tokens = {PROTOCOL["EOS"], PROTOCOL["PAD"], PROTOCOL["BOS"]}
+        # finally 里要释放，先初始化为空 (异常发生在创建前时安全)
+        talker_samplers = []
+        pred_samplers = []
+        cancelled = False
+        try:
+            talker_samplers = [self._create_talker_sampler(cfg) for cfg in cfgs]
+            pred_samplers = [self._create_predictor_sampler(cfg) for cfg in cfgs]
+            allow_tokens = {PROTOCOL["EOS"], PROTOCOL["PAD"], PROTOCOL["BOS"]}
 
-        # 各路 sub 参数一致时启用 numpy 分块采样快路径 (异参退回原生逐路链)
-        sub_key = lambda c: (c.sub_do_sample, c.sub_temperature, c.sub_top_k, c.sub_top_p)
-        if len({sub_key(c) for c in cfgs}) == 1:
-            c0 = cfgs[0]
-            block_sampler = NumpyBlockSampler(
-                c0.sub_do_sample, c0.sub_temperature, c0.sub_top_k, c0.sub_top_p,
-                n_vocab=llama.llama_vocab_n_tokens(self.engine.predictor_model.vocab))
-            # 每路独立 RNG 流，跨帧连续 (同种子同轨迹，与原生链语义一致)
-            pred_rngs = [np.random.default_rng(
-                c.sub_seed if c.sub_seed is not None else int(time.time() * 1e9) + i)
-                for i, c in enumerate(cfgs)]
-        else:
-            block_sampler, pred_rngs = None, None
+            # 各路 sub 参数一致时启用 numpy 分块采样快路径 (异参退回原生逐路链)
+            sub_key = lambda c: (c.sub_do_sample, c.sub_temperature, c.sub_top_k, c.sub_top_p)
+            if len({sub_key(c) for c in cfgs}) == 1:
+                c0 = cfgs[0]
+                block_sampler = NumpyBlockSampler(
+                    c0.sub_do_sample, c0.sub_temperature, c0.sub_top_k, c0.sub_top_p,
+                    n_vocab=llama.llama_vocab_n_tokens(self.engine.predictor_model.vocab))
+                # 每路独立 RNG 流，跨帧连续 (同种子同轨迹，与原生链语义一致)
+                pred_rngs = [np.random.default_rng(
+                    c.sub_seed if c.sub_seed is not None else int(time.time() * 1e9) + i)
+                    for i, c in enumerate(cfgs)]
+            else:
+                block_sampler, pred_rngs = None, None
 
-        # 每帧分段耗时剖析 (累计值，秒)
-        prof = {"talker_sample": 0.0, "pred_input": 0.0, "pred_prefill": 0.0,
-                "pred_step_fill": 0.0, "pred_step_decode": 0.0, "pred_sample": 0.0,
-                "pred_embeds": 0.0, "talker_fill": 0.0, "talker_decode": 0.0, "talker_extract": 0.0}
-        self.profile = prof
+            # 每帧分段耗时剖析 (累计值，秒)
+            prof = {"talker_sample": 0.0, "pred_input": 0.0, "pred_prefill": 0.0,
+                    "pred_step_fill": 0.0, "pred_step_decode": 0.0, "pred_sample": 0.0,
+                    "pred_embeds": 0.0, "talker_fill": 0.0, "talker_decode": 0.0, "talker_extract": 0.0}
+            self.profile = prof
 
-        # 3. 批量 Prefill (各路 pos 从 0 起，长度可不同；M-RoPE 4 平面)
-        t_pre = time.time()
-        entries = [(pd.embd[0], 0, p) for p, pd in enumerate(prompt_datas)]
-        last_idx = talker_batch.set_embd_multi(entries, pos_planes=4)
-        if talker_ctx.decode(talker_batch) != 0:
-            raise RuntimeError("Batch Talker Prefill decode failed")
-        self.last_prefill_tokens = talker_batch.n_tokens
-        batch_idx = dict(zip(range(B), last_idx))
-        for p in range(B):
-            hiddens[p] = np.ctypeslib.as_array(
-                talker_ctx.get_embeddings_ith(batch_idx[p]), shape=(n_embd_t,)).copy()
-            cur_pos[p] = prompt_datas[p].embd.shape[1]
-            timings[p].prefill_time = time.time() - t_pre
-        logger.info(f"[Batch] Prefill 完成 ({B} 路, 共 {talker_batch.n_tokens} tokens)")
-
-        # 4. 逐帧 lockstep 主循环
-        active = list(range(B))
-        t_gen = time.time()
-        for frame in range(max(cfg.max_steps for cfg in cfgs)):
-            active = [p for p in active if frame < cfgs[p].max_steps]
-            if not active:
-                break
-
-            # ---- Stage 1: Talker 采样 code_0 ----
-            t0 = time.time()
-            code0s = {}
-            for p in active:
-                code0 = talker_samplers[p].sample(
-                    talker_ctx, idx=batch_idx[p],
-                    limit_start=0, limit_end=2048, allow_tokens=allow_tokens)
-                talker_samplers[p].accept(code0)
-                if code0 != PROTOCOL["EOS"]:
-                    code0s[p] = code0
-            prof["talker_sample"] += time.time() - t0
-            active = list(code0s.keys())
-            if not active:
-                break
-
-            # ---- Stage 2: Predictor 批量补全 16 码 ----
-            t_pred = time.time()
-            step_codes_list, audio_sum = self._predict_frames(
-                pred_ctx, pred_batch,
-                [hiddens[p] for p in active], [code0s[p] for p in active],
-                [pred_samplers[p] for p in active], prof,
-                block_sampler, [pred_rngs[p] for p in active] if block_sampler else None)
-            prof["pred_whole"] = prof.get("pred_whole", 0.0) + (time.time() - t_pred)
-            for p in active:
-                timings[p].predictor_loop_times.append(time.time() - t_pred)
-
-            # ---- Stage 3: Talker 批量吃回音频反馈 ----
-            t_talk = time.time()
-            t0 = time.time()
-            entries = []
-            for row, p in enumerate(active):
-                audio_summed = audio_sum[row]
-                pool = trailing[p]
-                if pool is not None and step_idx[p] < len(pool):
-                    text_vec = pool[step_idx[p]]
-                else:
-                    text_vec = self.assets.tts_pad
-                entries.append(((audio_summed + text_vec).reshape(1, -1), cur_pos[p], p))
-
-                step_idx[p] += 1
-                all_codes[p].append(step_codes_list[row])
-                summed[p].append(audio_summed)
-
-                if cur_pos[p] >= self.n_ctx_per_seq - 1:
-                    raise IndexError(f"[Batch] Talker context overflow at seq {p}: {cur_pos[p]}")
-
+            # 3. 批量 Prefill (各路 pos 从 0 起，长度可不同；M-RoPE 4 平面)
+            t_pre = time.time()
+            entries = [(pd.embd[0], 0, p) for p, pd in enumerate(prompt_datas)]
             last_idx = talker_batch.set_embd_multi(entries, pos_planes=4)
-            prof["talker_fill"] += time.time() - t0
-            t0 = time.time()
             if talker_ctx.decode(talker_batch) != 0:
-                raise RuntimeError(f"[Batch] Talker step decode failed at frame {frame}")
-            prof["talker_decode"] += time.time() - t0
-            t0 = time.time()
-            batch_idx = dict(zip(active, last_idx))
-            for p in active:
+                raise RuntimeError("Batch Talker Prefill decode failed")
+            self.last_prefill_tokens = talker_batch.n_tokens
+            batch_idx = dict(zip(range(B), last_idx))
+            for p in range(B):
                 hiddens[p] = np.ctypeslib.as_array(
                     talker_ctx.get_embeddings_ith(batch_idx[p]), shape=(n_embd_t,)).copy()
-                cur_pos[p] += 1
-            prof["talker_extract"] += time.time() - t0
-            for p in active:
-                timings[p].talker_loop_times.append(time.time() - t_talk)
+                cur_pos[p] = prompt_datas[p].embd.shape[1]
+                timings[p].prefill_time = time.time() - t_pre
+            logger.info(f"[Batch] Prefill 完成 ({B} 路, 共 {talker_batch.n_tokens} tokens)")
 
-            if frame % 50 == 0:
-                logger.info(f"[Batch] 帧进度 {frame}, 活跃 {len(active)}/{B}")
+            # 4. 逐帧 lockstep 主循环
+            active = list(range(B))
+            t_gen = time.time()
+            for frame in range(max(cfg.max_steps for cfg in cfgs)):
+                # 取消检查点: 每帧开头检查，置位则本批整批丢弃
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    cancelled = True
+                    logger.info("[Batch] 收到取消信号，本批丢弃")
+                    break
+
+                active = [p for p in active if frame < cfgs[p].max_steps]
+                if not active:
+                    break
+
+                # ---- Stage 1: Talker 采样 code_0 ----
+                t0 = time.time()
+                code0s = {}
+                for p in active:
+                    code0 = talker_samplers[p].sample(
+                        talker_ctx, idx=batch_idx[p],
+                        limit_start=0, limit_end=2048, allow_tokens=allow_tokens)
+                    talker_samplers[p].accept(code0)
+                    if code0 != PROTOCOL["EOS"]:
+                        code0s[p] = code0
+                prof["talker_sample"] += time.time() - t0
+                active = list(code0s.keys())
+                if not active:
+                    break
+
+                # ---- Stage 2: Predictor 批量补全 16 码 ----
+                t_pred = time.time()
+                step_codes_list, audio_sum = self._predict_frames(
+                    pred_ctx, pred_batch,
+                    [hiddens[p] for p in active], [code0s[p] for p in active],
+                    [pred_samplers[p] for p in active], prof,
+                    block_sampler, [pred_rngs[p] for p in active] if block_sampler else None)
+                prof["pred_whole"] = prof.get("pred_whole", 0.0) + (time.time() - t_pred)
+                for p in active:
+                    timings[p].predictor_loop_times.append(time.time() - t_pred)
+
+                # ---- Stage 3: Talker 批量吃回音频反馈 ----
+                t_talk = time.time()
+                t0 = time.time()
+                entries = []
+                overflowed = set()
+                for row, p in enumerate(active):
+                    if cur_pos[p] >= self.n_ctx_per_seq - 1:
+                        logger.warning(f"[Batch] Talker context 溢出，seq {p} 提前退出 (已生成 {len(all_codes[p])} 帧)")
+                        overflowed.add(p)
+                        continue
+                    audio_summed = audio_sum[row]
+                    pool = trailing[p]
+                    if pool is not None and step_idx[p] < len(pool):
+                        text_vec = pool[step_idx[p]]
+                    else:
+                        text_vec = self.assets.tts_pad
+                    entries.append(((audio_summed + text_vec).reshape(1, -1), cur_pos[p], p))
+
+                    step_idx[p] += 1
+                    all_codes[p].append(step_codes_list[row])
+                    summed[p].append(audio_summed)
+                active = [p for p in active if p not in overflowed]
+                if not entries:
+                    if active:
+                        continue
+                    break
+                last_idx = talker_batch.set_embd_multi(entries, pos_planes=4)
+                prof["talker_fill"] += time.time() - t0
+                t0 = time.time()
+                if talker_ctx.decode(talker_batch) != 0:
+                    raise RuntimeError(f"[Batch] Talker step decode failed at frame {frame}")
+                prof["talker_decode"] += time.time() - t0
+                t0 = time.time()
+                batch_idx = dict(zip(active, last_idx))
+                for p in active:
+                    hiddens[p] = np.ctypeslib.as_array(
+                        talker_ctx.get_embeddings_ith(batch_idx[p]), shape=(n_embd_t,)).copy()
+                    cur_pos[p] += 1
+                prof["talker_extract"] += time.time() - t0
+                for p in active:
+                    timings[p].talker_loop_times.append(time.time() - t_talk)
+
+                if frame % 50 == 0:
+                    logger.info(f"[Batch] 帧进度 {frame}, 活跃 {len(active)}/{B}")
+
+        finally:
+            # 释放推理环境 (取消/异常路径同样执行)
+            for sm in talker_samplers + pred_samplers:
+                sm.free()
+            del talker_batch, pred_batch, talker_ctx, pred_ctx
+
+        if cancelled:
+            return [None] * B
 
         logger.info(f"[Batch] 生成结束: 帧数 {[len(c) for c in all_codes]}")
         gen_time = time.time() - t_gen
 
-        # 5. 收尾: 释放推理环境，解码渲染并组装结果
-        for sm in talker_samplers + pred_samplers:
-            sm.free()
-        del talker_batch, pred_batch, talker_ctx, pred_ctx
+        # 5. 收尾: 解码渲染并组装结果
 
         results = []
         for p, (text, pd, voice, _cfg) in enumerate(prepared):
