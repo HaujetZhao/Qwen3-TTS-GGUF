@@ -176,7 +176,7 @@ class BatchRunner:
         summed = [[] for _ in range(B)]
         timings = [Timing(prompt_time=pd.compile_time) for pd in prompt_datas]
 
-        # finally 里要释放，先初始化为空 (异常发生在创建前时安全)
+        # 预初始化供 finally 引用（创建语句抛异常时为空表，free 空转）
         talker_samplers = []
         pred_samplers = []
         cancelled = False
@@ -283,8 +283,6 @@ class BatchRunner:
                     summed[p].append(audio_summed)
                 active = [p for p in active if p not in overflowed]
                 if not entries:
-                    if active:
-                        continue
                     break
                 last_idx = talker_batch.set_embd_multi(entries, pos_planes=4)
                 prof["talker_fill"] += time.time() - t0
