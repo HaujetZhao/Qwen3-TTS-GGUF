@@ -20,6 +20,28 @@ class QueueLogHandler(logging.Handler):
             self.handleError(record)
 
 
+class PrintRedirect:
+    """把 print 输出导向 GUI 日志队列，同时保留原 stdout (按行缓冲)"""
+    def __init__(self, q, original):
+        self.q = q
+        self.original = original
+        self._buf = ""
+
+    def write(self, s):
+        self.original.write(s)
+        self._buf += s
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line.strip():
+                self.q.put(("log", line))
+
+    def flush(self):
+        self.original.flush()
+        if self._buf.strip():
+            self.q.put(("log", self._buf))
+        self._buf = ""
+
+
 class LogTab(ttkb.Frame):
     """只读日志页：显示历史日志，自动滚到底"""
 
@@ -30,16 +52,19 @@ class LogTab(ttkb.Frame):
 
         # 顶部一行：清除按钮右对齐
         top = ttkb.Frame(self)
-        top.grid(row=0, column=0, columnspan=2, sticky=EW)
+        top.grid(row=0, column=0, columnspan=3, sticky=EW)
         ttkb.Button(top, text="清除日志", command=self.clear, width=10).pack(side=RIGHT)
 
-        self.text = tk.Text(self, wrap="word", state="disabled", relief="flat",
+        # 不折行：长行保持完整，横向滚动查看
+        self.text = tk.Text(self, wrap="none", state="disabled", relief="flat",
                             padx=6, pady=4, highlightthickness=1,
                             highlightbackground="#c9c9c9", highlightcolor="#1a7f8e")
         ybar = ttkb.Scrollbar(self, orient=VERTICAL, command=self.text.yview)
-        self.text.configure(yscrollcommand=ybar.set)
+        xbar = ttkb.Scrollbar(self, orient=HORIZONTAL, command=self.text.xview)
+        self.text.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
         self.text.grid(row=1, column=0, sticky=NSEW)
         ybar.grid(row=1, column=1, sticky=NS)
+        xbar.grid(row=2, column=0, sticky=EW)
 
     def append(self, line: str):
         self.text.configure(state="normal")

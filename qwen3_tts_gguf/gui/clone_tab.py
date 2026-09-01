@@ -2,12 +2,14 @@
 import os
 import queue
 import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
 
 import ttkbootstrap as ttkb
+import windnd
 from ttkbootstrap.constants import *
 
 from qwen3_tts_gguf import logger
@@ -15,7 +17,7 @@ from qwen3_tts_gguf.inference import TTSEngine, TTSConfig
 from qwen3_tts_gguf.inference.batch import BatchRunner
 from qwen3_tts_gguf.inference.voice import prepare_voice
 
-from .log_tab import QueueLogHandler
+from .log_tab import PrintRedirect, QueueLogHandler
 
 # 克隆源支持的文件类型
 CLONE_SOURCE_TYPES = [("克隆源", "*.wav *.json"), ("所有文件", "*.*")]
@@ -27,6 +29,26 @@ LANGUAGES = {"中文": "Chinese", "英语": "English", "越南语": "Vietnamese"
 # 设备选项：LLM = Talker + Predictor (GGUF/llama.cpp)；ONNX 组件 = 解码器/编解码器/说话人编码器
 LLM_DEVICES = ["GPU", "CPU"]
 ONNX_PROVIDERS = ["CUDA", "CPU"]
+
+
+def _hook_drop_folder(entry, var):
+    """文件夹输入框拖拽: 文件夹直填，文件取父目录"""
+    def on_drop(file_list):
+        # windnd 回调在 UI 线程 (消息循环)，可直接更新变量
+        p = file_list[0].decode("gbk", errors="replace")
+        if os.path.isfile(p):
+            p = os.path.dirname(p)
+        var.set(p)
+    windnd.hook_dropfiles(entry, func=on_drop)
+
+
+def _hook_drop_file(entry, var):
+    """文件输入框拖拽: 只收文件"""
+    def on_drop(file_list):
+        p = file_list[0].decode("gbk", errors="replace")
+        if os.path.isfile(p):
+            var.set(p)
+    windnd.hook_dropfiles(entry, func=on_drop)
 
 
 class CloneTab(ttkb.Frame):
@@ -57,6 +79,7 @@ class CloneTab(ttkb.Frame):
         self.model_dir = tk.StringVar(value="model-base")
         self.model_entry = ttkb.Entry(group, textvariable=self.model_dir)
         self.model_entry.grid(row=0, column=1, sticky=EW, pady=4)
+        _hook_drop_folder(self.model_entry, self.model_dir)
         browse_btn = ttkb.Button(group, text="浏览", command=self.on_browse_model, width=14)
         browse_btn.grid(row=0, column=2, padx=(8, 0), pady=4)
 
@@ -95,11 +118,13 @@ class CloneTab(ttkb.Frame):
         # 克隆源
         ttkb.Label(group, text="克隆源").grid(row=0, column=0, sticky=W, padx=(0, 10), pady=4)
         self.clone_source = tk.StringVar(value="output/elaborate/Vivian.json")
-        ttkb.Entry(group, textvariable=self.clone_source).grid(row=0, column=1, sticky=EW, pady=4)
+        source_entry = ttkb.Entry(group, textvariable=self.clone_source)
+        source_entry.grid(row=0, column=1, sticky=EW, pady=4)
+        _hook_drop_file(source_entry, self.clone_source)
         ttkb.Button(group, text="选择克隆源", command=self.on_pick_source, width=14).grid(row=0, column=2, padx=(8, 0), pady=4)
 
         # 任务文本
-        text_group = ttkb.Labelframe(group, text="输入文本（每行一个任务，多路批量生成）", padding=5)
+        text_group = ttkb.Labelframe(group, text="输入文本（每行一个任务，多路批量生成，# 开头为注释）", padding=5)
         text_group.grid(row=1, column=0, columnspan=3, sticky=NSEW, pady=(8, 3))
         text_group.columnconfigure(0, weight=1)
         text_group.rowconfigure(0, weight=1)
@@ -119,7 +144,9 @@ class CloneTab(ttkb.Frame):
         # 输出文件夹
         ttkb.Label(group, text="输出文件夹").grid(row=2, column=0, sticky=W, padx=(0, 10), pady=4)
         self.output_dir = tk.StringVar(value="./output/clone")
-        ttkb.Entry(group, textvariable=self.output_dir).grid(row=2, column=1, sticky=EW, pady=4)
+        output_entry = ttkb.Entry(group, textvariable=self.output_dir)
+        output_entry.grid(row=2, column=1, sticky=EW, pady=4)
+        _hook_drop_folder(output_entry, self.output_dir)
         ttkb.Button(group, text="浏览", command=self.on_browse_output, width=14).grid(row=2, column=2, padx=(8, 0), pady=4)
 
         self._build_param_grid(group)
@@ -158,7 +185,8 @@ class CloneTab(ttkb.Frame):
     def _build_control_row(self, group):
         bar = ttkb.Frame(group)
         bar.grid(row=4, column=0, columnspan=3, sticky=EW)
-        self.start_btn = ttkb.Button(bar, text="开始生成", command=self.on_start_stop, width=14, bootstyle=PRIMARY)
+        self.start_btn = ttkb.Button(bar, text="开始生成", command=self.on_start_stop, width=14,
+                                     bootstyle=PRIMARY, state="disabled")  # 引擎载入前不可生成
         self.start_btn.pack(side=RIGHT)
         ttkb.Button(bar, text="打开输出文件夹", command=self.on_open_output, width=14).pack(side=RIGHT, padx=(0, 8))
         # 并发路数：每轮同时生成的路数，任务文本按行拆分后按此分批
@@ -174,6 +202,9 @@ class CloneTab(ttkb.Frame):
         self.progress = progress
         self.log_tab = log_tab
         logger.addHandler(QueueLogHandler(self.ui_queue))
+        # inference 里的 print（引擎初始化耗时等）也导入日志页；stderr 不动，异常栈走控制台/logger 文件
+        import sys
+        sys.stdout = PrintRedirect(self.ui_queue, sys.stdout)
         self.after(100, self._poll)
 
     def _poll(self):
@@ -209,7 +240,8 @@ class CloneTab(ttkb.Frame):
         self.load_btn.configure(text="卸载" if ok else "载入", state="normal")
         for w in self._load_fields:
             w.configure(state="disabled" if ok else "normal")
-        self.start_btn.configure(state="normal")  # 载入结束（成功/失败/卸载）恢复生成按钮
+        # 生成按钮只在引擎就绪时可用；失败/卸载后禁用
+        self.start_btn.configure(state="normal" if ok else "disabled")
 
     def _set_generating(self, on: bool):
         """生成中: 开始变停止、卸载按钮禁用（须先停止再卸载）"""
@@ -284,7 +316,8 @@ class CloneTab(ttkb.Frame):
         source = self.clone_source.get().strip()
         if not source:
             self.ui_queue.put(("error", "未选择克隆源")); return
-        lines = [l.strip() for l in self.task_text.get("1.0", "end").splitlines() if l.strip()]
+        lines = [l.strip() for l in self.task_text.get("1.0", "end").splitlines()]
+        lines = [l for l in lines if l and not l.startswith("#")]  # 空行与 # 注释行剔除
         if not lines:
             self.ui_queue.put(("error", "任务文本为空")); return
 
@@ -335,8 +368,16 @@ class CloneTab(ttkb.Frame):
                 if self.cancel_event.is_set():
                     break
                 self.ui_queue.put(("status", f"批次 {bi + 1}/{len(batches)}（{len(batch)} 路）生成中…"))
+                t0 = time.time()
                 tasks = [(text, voice, language, False, cfg) for text in batch]
-                for r in runner.clone_batch(tasks):
+                results = runner.clone_batch(tasks)
+                dt = time.time() - t0
+                frames = sum(r.codes.shape[0] for r in results if r is not None)
+                audio_s = frames / 12.5  # 每秒 12.5 帧
+                if frames > 0:
+                    logger.info(f"[GUI] 批次 {bi + 1}/{len(batches)}: {len(batch)} 路, "
+                                f"音频 {audio_s:.1f}s, 壁钟 {dt:.2f}s, RTF {dt / audio_s:.3f}")
+                for r in results:
                     idx += 1
                     if r is not None:
                         r.save(str(out_dir / f"{idx:03d}.wav"))
@@ -357,8 +398,8 @@ class CloneTab(ttkb.Frame):
 
     def on_open_output(self):
         path = self.output_dir.get()
-        if os.path.isdir(path):
-            os.startfile(path)
+        os.makedirs(path, exist_ok=True)  # 用户的意图就是要这个目录，不存在就建出来
+        os.startfile(path)
 
     def shutdown(self):
         """关窗前收尾: 停止生成 -> 卸载引擎。join 有超时，保证快速退出。"""
