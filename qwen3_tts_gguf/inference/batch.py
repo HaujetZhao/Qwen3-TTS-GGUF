@@ -318,7 +318,7 @@ class BatchRunner:
         # 5. 收尾: 解码渲染并组装结果
 
         results = []
-        for p, (text, pd, voice, _cfg) in enumerate(prepared):
+        for p, (text, _pd, voice, _cfg) in enumerate(prepared):
             pd = prompt_datas[p]
             codes = np.array(all_codes[p]) if all_codes[p] else np.zeros((0, 16))
             timings[p].total_steps = len(all_codes[p])

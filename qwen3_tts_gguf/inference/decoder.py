@@ -298,6 +298,8 @@ class LocalDecoder:
     """
     进程内解码器：与 DecoderProxy.decode() 同签名的同步实现，服务离线场景 (GUI/批量)。
     无队列无监听线程，无播放相关接口 (pause/raw_play 等不支持)。
+    差异: 流式中间包本实现返回含该块音频的 DecodeResult (DecoderProxy 同分支返回空数组)，
+    离线场景调用方不消费该返回值。
     """
     def __init__(self, onnx_path: str, onnx_provider: str = 'CPU', chunk_size: int = 12):
         self._dec = StatefulDecoder(onnx_path, onnx_provider=onnx_provider, chunk_size=chunk_size)

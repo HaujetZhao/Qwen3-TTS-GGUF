@@ -209,6 +209,7 @@ class CloneTab(ttkb.Frame):
         self.load_btn.configure(text="卸载" if ok else "载入", state="normal")
         for w in self._load_fields:
             w.configure(state="disabled" if ok else "normal")
+        self.start_btn.configure(state="normal")  # 载入结束（成功/失败/卸载）恢复生成按钮
 
     def _set_generating(self, on: bool):
         """生成中: 开始变停止、卸载按钮禁用（须先停止再卸载）"""
@@ -250,6 +251,7 @@ class CloneTab(ttkb.Frame):
                       llm=self.llm_device.get(),
                       onnx=self.onnx_provider.get())
         self.load_btn.configure(state="disabled")
+        self.start_btn.configure(state="disabled")  # 载入中禁止生成
         self.ui_queue.put(("status", "正在载入模型…"))
         threading.Thread(target=self._load_worker, kwargs=params, daemon=True).start()
 
@@ -308,6 +310,7 @@ class CloneTab(ttkb.Frame):
             n_ctx=n_ctx,
             n_paths=n_paths,
             out_root=self.output_dir.get(),
+            engine=self.engine,
         )
         self.cancel_event = threading.Event()
         self._set_generating(True)
@@ -315,14 +318,14 @@ class CloneTab(ttkb.Frame):
         self._gen_thread = threading.Thread(target=self._gen_worker, kwargs=params, daemon=True)
         self._gen_thread.start()
 
-    def _gen_worker(self, source, lines, language, cfg, n_ctx, n_paths, out_root):
+    def _gen_worker(self, engine, source, lines, language, cfg, n_ctx, n_paths, out_root):
         """后台线程: 准备锚点 -> 分批 clone_batch -> 按序号落盘 wav+json"""
         try:
-            voice = prepare_voice(self.engine, self.engine.tokenizer, source)
+            voice = prepare_voice(engine, engine.tokenizer, source)
             if voice is None:
                 self.ui_queue.put(("error", "克隆源准备失败，详见日志"))
                 return
-            runner = BatchRunner(self.engine, n_ctx_per_seq=n_ctx, cancel_event=self.cancel_event)
+            runner = BatchRunner(engine, n_ctx_per_seq=n_ctx, cancel_event=self.cancel_event)
             out_dir = Path(out_root) / datetime.now().strftime("%Y%m%d-%H%M%S")
             out_dir.mkdir(parents=True, exist_ok=True)
 
