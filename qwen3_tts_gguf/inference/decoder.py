@@ -302,6 +302,7 @@ class LocalDecoder:
     def __init__(self, onnx_path: str, onnx_provider: str = 'CPU', chunk_size: int = 12):
         self._dec = StatefulDecoder(onnx_path, onnx_provider=onnx_provider, chunk_size=chunk_size)
         self.sessions = {}  # task_id -> DecoderSession (流式多次调用间保持状态)
+        self._bank = {}    # task_id -> 已累积的 AUDIO 响应 (储蓄罐语义，终态时一并打包)
         self.ready_states = {"decoder": True, "speaker": False}  # engine 打印用
 
     def wait_until_ready(self, timeout=10):
@@ -336,15 +337,19 @@ class LocalDecoder:
         is_task_final = is_final or not stream
         audio, new_state = self._dec.decode(codes_arr, state=curr_state, is_final=is_task_final)
 
-        responses = [DecoderResponse(
+        audio_resp = DecoderResponse(
             task_id=task_id, msg_type="AUDIO",
             audio=audio.copy() if len(audio) > 0 else np.array([], dtype=np.float32),
-            compute_time=time.time() - t_start)]
+            compute_time=time.time() - t_start, recv_time=time.time())
         if is_task_final:
+            # 储蓄罐语义：终态时把整个任务累积的所有 AUDIO 响应一并打包返回
+            responses = self._bank.pop(task_id, []) + [audio_resp]
             responses.append(DecoderResponse(task_id=task_id, msg_type="FINISH", state=new_state))
             self.sessions.pop(task_id, None)
         else:
             self.sessions[task_id] = DecoderSession(state=new_state)
+            self._bank.setdefault(task_id, []).append(audio_resp)
+            responses = [audio_resp]
 
         result = _DecodeResult(responses=responses)
         if isinstance(input, _TTSResult):
@@ -354,7 +359,21 @@ class LocalDecoder:
                 input.stats.decoder_compute_times = result.chunk_compute_times
         return result
 
+    def stop(self, task_id):
+        """中止任务：丢弃会话与累积响应。"""
+        self.sessions.pop(task_id, None)
+        self._bank.pop(task_id, None)
+
+    def join_decoder(self):
+        """同步执行，无等待语义。"""
+        pass
+
+    def join_speaker(self):
+        """同步执行，无等待语义。"""
+        pass
+
     def shutdown(self):
         self.sessions.clear()
+        self._bank.clear()
 
 

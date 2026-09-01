@@ -80,6 +80,7 @@ class TTSEngine:
             if subprocess_decoder:
                 is_decoder_ready = self.decoder.wait_until_ready(timeout=10)
                 if not is_decoder_ready:
+                    print(f"❌ [Engine] 引擎初始化未完全就绪 (解码器超时)。")
                     logger.warning("⚠️ [Engine] 解码器就绪超时，渲染功能将不可用。")
                     self.ready = False
                     return
