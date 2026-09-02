@@ -1,11 +1,12 @@
 """
 Qwen3-TTS GGUF 图形界面（ttkbootstrap）——组装层。
 
-- 克隆 Tab：载入区（模型/后端/上下文）+ 推理区（克隆源/任务文本/输出/参数）
-- 自定义音色 / 音色设计 Tab：占位
+- 克隆 / 自定义音色 / 音色设计 Tab：各自载入区（模型/后端/上下文）+ 推理区
+- 设置 Tab：全局开关（如单模型模式）
 - 日志 Tab：只读日志 + 清除
 
-克隆走批量生成，不做流式。页面实现拆在 clone_tab / log_tab，此处只做样式与组装。
+各模式走批量生成，不做流式。页面实现拆在 clone_tab / custom_tab / design_tab /
+settings_tab / log_tab，此处只做样式与组装。
 """
 import tkinter as tk
 
@@ -13,6 +14,9 @@ import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
 
 from .clone_tab import CloneTab
+from .custom_tab import CustomTab
+from .design_tab import DesignTab
+from .settings_tab import SettingsTab
 from .log_tab import LogTab
 
 UI_SCALE = 1.25        # 整体缩放系数
@@ -20,7 +24,7 @@ DEBUG_TOPMOST = True   # 调试阶段保持窗口占据前台
 
 
 def pad_title(title, width=6):
-    """用全角空格把 tab 标题补到同样宽度，使四个 tab 等宽"""
+    """用全角空格把 tab 标题补到同样宽度，使各 tab 等宽"""
     pad = width - len(title)
     return "　" * (pad // 2) + title + "　" * (pad - pad // 2)
 
@@ -36,14 +40,6 @@ def highlight_active_tab():
     """选中 tab 用普通按钮同款深色。必须等 Notebook 创建完再调——ttkbootstrap 建控件时会重刷样式"""
     style = ttkb.Style.get_instance()
     style.map("TNotebook.Tab", background=[("selected", "#2c3e50")], foreground=[("selected", "#ffffff")])
-
-
-class PlaceholderTab(ttkb.Frame):
-    """占位页：自定义音色 / 音色设计"""
-
-    def __init__(self, master, text):
-        super().__init__(master, padding=20)
-        ttkb.Label(self, text=f"{text}：待实现，先做克隆", font=("微软雅黑", 12)).pack(expand=True)
 
 
 def main():
@@ -62,11 +58,15 @@ def main():
     nb.grid(row=0, column=0, sticky=NSEW, padx=6, pady=6)
 
     clone_tab = CloneTab(nb)
+    custom_tab = CustomTab(nb)
+    design_tab = DesignTab(nb)
+    settings_tab = SettingsTab(nb)
     log_tab = LogTab(nb)
     tabs = [
         (clone_tab, "克隆"),
-        (PlaceholderTab(nb, "自定义音色"), "自定义音色"),
-        (PlaceholderTab(nb, "音色设计"), "音色设计"),
+        (custom_tab, "自定义音色"),
+        (design_tab, "音色设计"),
+        (settings_tab, "设置"),
         (log_tab, "日志"),
     ]
     for tab, title in tabs:
@@ -81,10 +81,28 @@ def main():
     progress = ttkb.Progressbar(bar, mode="determinate", length=240)
     progress.pack(side=RIGHT)
 
-    clone_tab.bind_feedback(status_var, progress, log_tab)
+    for gen_tab in (clone_tab, custom_tab, design_tab):
+        gen_tab.bind_feedback(status_var, progress, log_tab)
+
+    gen_tabs = (clone_tab, custom_tab, design_tab)
+
+    def unload_others(current):
+        """单模型模式: 在 current 页启动载入前，卸载其他页已载入的引擎。
+
+        生成中/载入中的页跳过（生成中卸载是 use-after-free，载入中无法中断）。
+        """
+        if not settings_tab.single_model.get():
+            return
+        for t in gen_tabs:
+            if t is not current and t.engine is not None and not t.generating and not t.loading:
+                t.on_load_toggle()
+
+    for t in gen_tabs:
+        t.unload_others = unload_others
 
     def on_close():
-        clone_tab.shutdown()   # 停止生成 -> 卸载引擎
+        for gen_tab in (clone_tab, custom_tab, design_tab):
+            gen_tab.shutdown()   # 停止生成 -> 卸载引擎
         app.destroy()
 
     # 显式接管关窗：先停生成/卸载引擎，destroy 后 _poll 由 winfo_exists 断开轮询链
