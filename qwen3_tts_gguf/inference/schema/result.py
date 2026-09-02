@@ -99,21 +99,26 @@ class Timing:
         return sum(self.predictor_loop_times)
 
     @property
+    def total_gen_loop_time(self) -> float:
+        """生成主循环耗时: 批量 lockstep 为共享墙钟 gen_time (记一次)；
+        流式为逐块 talker/predictor 求和 (逐块真实值)。两种模式按字段填充互斥"""
+        if self.gen_time > 0:
+            return self.gen_time
+        return self.total_talker_time + self.total_predictor_time
+
+    @property
     def total_decoder_time(self) -> float:
         return sum(self.decoder_compute_times)
 
     @property
     def total_inference_time(self) -> float:
         """全链路总耗时（含解码渲染）"""
-        return (self.prompt_time + self.prefill_time +
-                self.total_talker_time + self.total_predictor_time +
-                self.total_decoder_time)
+        return self.inference_only_time + self.total_decoder_time
 
     @property
     def inference_only_time(self) -> float:
-        """核心推理耗时（不含解码渲染）"""
-        return (self.prompt_time + self.prefill_time +
-                self.total_talker_time + self.total_predictor_time)
+        """LLM 侧核心推理耗时（不含解码渲染）"""
+        return self.prompt_time + self.prefill_time + self.total_gen_loop_time
 
 
 @dataclass
@@ -367,7 +372,7 @@ class TTSResult:
         print(f"性能分析报告 (音频长度: {self.duration:.2f}s)")
         print(f"  1. Prompt:    {s.prompt_time:.2f}s")
         print(f"  2. Prefill:   {s.prefill_time:.2f}s")
-        print(f"  3. Generate:  {s.total_talker_time + s.total_predictor_time:.2f}s (Talker: {s.total_talker_time:.2f}s, Predictor: {s.total_predictor_time:.2f}s)")
+        print(f"  3. Generate:  {s.total_gen_loop_time:.2f}s (Talker: {s.total_talker_time:.2f}s, Predictor: {s.total_predictor_time:.2f}s)")
         print(f"  4. Decode:    {s.total_decoder_time:.2f}s")
         print(f"  5. Latency:   {s.first_audio_latency:.2f}s (Generate: {s.first_chunk_latency:.2f}s, Decode: {s.first_decode_latency:.2f}s)")
             

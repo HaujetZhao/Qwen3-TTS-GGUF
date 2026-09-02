@@ -64,7 +64,13 @@ class StatefulDecoder:
         available_providers = ort.get_available_providers()
         providers = ['CPUExecutionProvider']
         
-        if self.onnx_provider in ('TRT', 'TENSORRT') and 'TensorrtExecutionProvider' in available_providers:
+        if self.onnx_provider == 'GPU':
+            # GPU = 自动挑当前 onnxruntime 包可用的加速后端
+            for prov in ('CUDAExecutionProvider', 'DmlExecutionProvider'):
+                if prov in available_providers:
+                    providers.insert(0, prov)
+                    break
+        elif self.onnx_provider in ('TRT', 'TENSORRT') and 'TensorrtExecutionProvider' in available_providers:
             providers.insert(0, ('TensorrtExecutionProvider', {
                 'trt_fp16_enable': True,
                 'trt_engine_cache_enable': True,

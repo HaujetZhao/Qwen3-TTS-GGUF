@@ -31,7 +31,7 @@ from .log_tab import PrintRedirect, QueueLogHandler
 
 # 设备选项：LLM = Talker + Predictor (GGUF/llama.cpp)；ONNX 组件 = 解码器/编解码器/说话人编码器
 LLM_DEVICES = ["GPU", "CPU"]
-ONNX_PROVIDERS = ["CUDA", "CPU"]
+ONNX_PROVIDERS = ["GPU", "CPU"]
 
 # 全量语言（引擎 LANGUAGE_MAP 的 12 种）：自定义音色页用，克隆页用自己的 8 种子集
 LANGS_ALL = {
@@ -501,8 +501,16 @@ class TTSPageBase(ttkb.Frame):
                 total_frames += frames
                 audio_s = frames / 12.5  # 每秒 12.5 帧
                 if frames > 0:
+                    # 批量 lockstep: prefill/gen 主循环是各路共享的墙钟，只能算一次；
+                    # prompt 构建逐路串行、decoder 逐路串行，求和即真实墙钟
+                    stats = [r.stats for r in results if r is not None and r.stats]
+                    llm_s = (sum(s.prompt_time for s in stats) + stats[0].prefill_time
+                             + stats[0].total_gen_loop_time)
+                    dec_s = sum(s.total_decoder_time for s in stats)
                     logger.info(f"[GUI] 批次 {bi + 1}/{len(batches)}: {len(batch)} 路, "
-                                f"音频 {audio_s:.1f}s, 壁钟 {dt:.2f}s, RTF {dt / audio_s:.3f}")
+                                f"音频 {audio_s:.1f}s, 壁钟 {dt:.2f}s, RTF {dt / audio_s:.3f} "
+                                f"(LLM {llm_s:.2f}s / RTF {llm_s / audio_s:.3f}, "
+                                f"Decoder {dec_s:.2f}s / RTF {dec_s / audio_s:.3f})")
                 # 撞最大步数 = 未自然收束 (EOS)，可能是文本过长；照常落盘，只提示
                 for r in results:
                     if r is not None and r.stats.total_steps >= cfg.max_steps:

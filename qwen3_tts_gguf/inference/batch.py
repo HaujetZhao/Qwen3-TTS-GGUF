@@ -257,11 +257,8 @@ class BatchRunner:
                     [pred_samplers[p] for p in active], prof,
                     block_sampler, [pred_rngs[p] for p in active] if block_sampler else None)
                 prof["pred_whole"] = prof.get("pred_whole", 0.0) + (time.time() - t_pred)
-                for p in active:
-                    timings[p].predictor_loop_times.append(time.time() - t_pred)
 
                 # ---- Stage 3: Talker 批量吃回音频反馈 ----
-                t_talk = time.time()
                 t0 = time.time()
                 entries = []
                 overflowed = set()
@@ -297,8 +294,6 @@ class BatchRunner:
                         talker_ctx.get_embeddings_ith(batch_idx[p]), shape=(n_embd_t,)).copy()
                     cur_pos[p] += 1
                 prof["talker_extract"] += time.time() - t0
-                for p in active:
-                    timings[p].talker_loop_times.append(time.time() - t_talk)
 
                 if frame % 50 == 0:
                     logger.info(f"[Batch] 帧进度 {frame}, 活跃 {len(active)}/{B}")
