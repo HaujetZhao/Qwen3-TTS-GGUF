@@ -250,9 +250,9 @@ class TTSPageBase(ttkb.Frame):
         return [
             (0, 0, "language", "语言", next(iter(self.LANGS)), "combo"),
             (1, 0, "max_steps", "最大步数", "300", "entry"),
-            (0, 2, "temperature", "Talker 温度", "0.9", "entry"),
+            (0, 2, "temperature", "Talker 温度", "0.8", "entry"),
             (1, 2, "seed", "Talker 种子", "42", "entry"),
-            (0, 4, "sub_temperature", "Predictor 温度", "0.9", "entry"),
+            (0, 4, "sub_temperature", "Predictor 温度", "0.2", "entry"),
             (1, 4, "sub_seed", "Predictor 种子", "45", "entry"),
         ]
 
@@ -494,21 +494,11 @@ class TTSPageBase(ttkb.Frame):
                 if frames > 0:
                     logger.info(f"[GUI] 批次 {bi + 1}/{len(batches)}: {len(batch)} 路, "
                                 f"音频 {audio_s:.1f}s, 壁钟 {dt:.2f}s, RTF {dt / audio_s:.3f}")
-                # 撞最大步数 = 未自然收束 (EOS)，该路大概率是噪声
-                n_hit = 0
-                warned = False
+                # 撞最大步数 = 未自然收束 (EOS)，可能是文本过长；照常落盘，只提示
                 for r in results:
                     if r is not None and r.stats.total_steps >= cfg.max_steps:
-                        n_hit += 1
-                        if not warned:  # 每批最多提示一次，避免刷屏
-                            logger.warning(f"[GUI] 该批次有路达到最大步数未自然结束 (total_steps={r.stats.total_steps})，输出可能异常")
-                            warned = True
-                if results and n_hit == len(results):
-                    # 整批全部撞顶: 源大概率有问题，主动停止后续批次
-                    logger.error("[GUI] 本批全部任务达到最大步数未收束，判定生成源异常，停止后续批次")
-                    self.ui_queue.put(("error", "生成源异常：全部任务未自然收束，已停止后续批次"))
-                    self.cancel_event.set()
-                    break
+                        logger.warning(f"[GUI] 有任务达到最大步数未自然结束 (total_steps={r.stats.total_steps})，音频可能不完整")
+                        break  # 每批最多提示一次，避免刷屏
                 for r in results:
                     idx += 1
                     if r is not None:
