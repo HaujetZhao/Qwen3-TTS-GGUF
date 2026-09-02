@@ -138,17 +138,22 @@ modelscope download --model Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
 
 #### 依赖环境
 
-适配版本 **llama.cpp b9333**。从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases/b9333) 下载预编译二进制，将 DLL 放入 `qwen_asr_gguf/bin/`：
+适配版本 **llama.cpp b10621**。从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases) 下载预编译二进制，将 DLL 放入 `qwen3_tts_gguf/bin/`：
 
 | 平台 | 下载文件 |
 |------|----------|
-| **Windows** | `llama-b9333-bin-win-vulkan-x64.zip` |
+| **Windows (Vulkan)** | `llama-b10621-bin-win-vulkan-x64.zip` |
+| **Windows (CUDA)** | `llama-b10621-bin-win-cuda-13.3-x64.zip`（另需 CUDA 13 运行时 `cudart64_13.dll`、`cublas64_13.dll`） |
 
 另外还需安装 FFmpeg，用于读取音频文件。
 
-``` 
-pip install -r requirements.txt
+推荐用 [uv](https://docs.astral.sh/uv/) 安装依赖：
+
 ```
+uv sync --extra dml
+```
+
+N 卡可换 `--extra gpu`；跑导出脚本再加 `--extra export`。不用 uv 则 `pip install -r requirements.txt`。
 
 #### 配置路径
 
@@ -191,6 +196,14 @@ python 34-Quantize-Predictor-GGUF.py    # 量化为 q8_0，这是推理引擎默
 导完之后，`EXPORT_DIR` 里就有你需要的所有文件了。
 
 ## 推理
+
+### GUI 模式（推荐）
+
+```
+python 52-GUI.py
+```
+
+图形界面：模型载入（LLM 设备 / ONNX 组件可选）、声音克隆 / 音色 / 设计、批量任务落盘 wav+json、模型瘦身工具。
 
 ### 脚本模式
 
