@@ -133,14 +133,15 @@ class ToolsTab(TTSPageBase):
     # ---------- 状态切换 ----------
 
     def _set_loaded(self, ok):
-        """载入成功: 按钮变卸载、载入区锁定、工具按钮解锁；失败/卸载: 还原"""
+        """载入成功: 按钮变卸载、载入区锁定、工具按钮解锁；失败/卸载(含被他页挤掉): 全部还原禁用"""
         self.load_btn.configure(text="卸载" if ok else "载入", state="normal")
         for w in self._load_fields:
             w.configure(state="disabled" if ok else "normal")
-        self._set_generating(False)
+        for b in self.tool_buttons:
+            b.configure(state="normal" if ok else "disabled")
 
     def _set_generating(self, on):
-        """工具执行中: 全部按钮锁死（含卸载，卸载是 use-after-free）；结束恢复"""
+        """工具执行中: 全部按钮锁死（含卸载，卸载是 use-after-free）；结束恢复（此时引擎必在）"""
         self.generating = on  # 复用基类 busy 标记: 单模型互斥据此跳过本页
         self.load_btn.configure(state="disabled" if on else "normal")
         for b in self.tool_buttons:

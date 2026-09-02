@@ -381,7 +381,6 @@ class TTSPageBase(ttkb.Frame):
         # tkinter 变量必须在 UI 线程读——参数在此读好再传给后台线程
         params = self._load_params()
         self.load_btn.configure(state="disabled")
-        self.start_btn.configure(state="disabled")  # 载入中禁止生成
         self.loading = True
         self.ui_queue.put(("status", "正在载入模型…"))
         threading.Thread(target=self._load_worker, kwargs=params, daemon=True).start()
