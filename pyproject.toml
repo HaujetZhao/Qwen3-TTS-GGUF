@@ -13,6 +13,7 @@ dependencies = [
     "scipy>=1.18.1",
     "sounddevice>=0.5.6",
     "soundfile>=0.14.0",
+    "tokenizers>=0.22",
     "ttkbootstrap>=2.2.2",
     "windnd>=1.0.7",
 ]
@@ -20,7 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 # ONNX 运行时二选一
 dml = ["onnxruntime-directml>=1.24.4"]
-gpu = ["onnxruntime-gpu>=1.29.0"]
+cuda = ["onnxruntime-gpu>=1.29.0"]
 # 仅导出/量化（根目录 1x/2x 号脚本）需要；torch 走 torch-cu132 源
 export = [
     "torch>=2.10",
@@ -35,6 +36,9 @@ export = [
 
 [project.scripts]
 qwen3-tts = "qwen3_tts_gguf:main"
+
+[dependency-groups]
+dev = ["pyinstaller>=6.17.0"]
 
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple"

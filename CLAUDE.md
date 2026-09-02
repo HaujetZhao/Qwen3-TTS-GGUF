@@ -18,7 +18,7 @@
 ## 依赖与环境
 
 - 真相源：`pyproject.toml` + `uv.lock`；`requirements.txt` 仅供 pip 用户，改依赖需手动同步
-- extras：`dml` / `gpu`（ONNX 运行时二选一）、`export`（torch cu132 + 导出工具链，仅 1x~3x 脚本需要）
+- extras：`dml` / `cuda`（ONNX 运行时二选一）、`export`（torch cu132 + 导出工具链，仅 1x~3x 脚本需要）
 - 日常：`uv sync --extra dml`；Python >= 3.14，运行用 `.venv/Scripts/python`（原 conda fun 环境已废弃）
 
 ## 文档

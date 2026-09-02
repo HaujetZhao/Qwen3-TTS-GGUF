@@ -21,14 +21,16 @@ class QueueLogHandler(logging.Handler):
 
 
 class PrintRedirect:
-    """把 print 输出导向 GUI 日志队列，同时保留原 stdout (按行缓冲)"""
+    """把 print 输出导向 GUI 日志队列，同时保留原 stdout (按行缓冲)。
+    original 为 None 的场景：windowed 打包 exe 没有控制台，PyInstaller 把 stdout 置 None"""
     def __init__(self, q, original):
         self.q = q
         self.original = original
         self._buf = ""
 
     def write(self, s):
-        self.original.write(s)
+        if self.original:
+            self.original.write(s)
         self._buf += s
         while "\n" in self._buf:
             line, self._buf = self._buf.split("\n", 1)
@@ -36,7 +38,8 @@ class PrintRedirect:
                 self.q.put(("log", line))
 
     def flush(self):
-        self.original.flush()
+        if self.original:
+            self.original.flush()
         if self._buf.strip():
             self.q.put(("log", self._buf))
         self._buf = ""
