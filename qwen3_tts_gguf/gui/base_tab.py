@@ -368,14 +368,16 @@ class TTSPageBase(ttkb.Frame):
         """载入前钩子：单模型模式下由 app 注入，卸载其他页已载入的引擎"""
         pass
 
-    def on_load_toggle(self):
+    def on_load_toggle(self, evict=False):
         if self.generating:
             return
         if self.engine is not None:
             self.engine.shutdown()
             self.engine = None
             self._set_loaded(False)
-            self.ui_queue.put(("status", "已卸载"))
+            # 被动卸载(被其他页顶掉)不上状态栏，避免覆盖载入页的"正在载入模型…"
+            if not evict:
+                self.ui_queue.put(("status", "已卸载"))
             return
         self.unload_others(self)  # 单模型模式: 载入前先卸掉其他页的引擎
         # tkinter 变量必须在 UI 线程读——参数在此读好再传给后台线程

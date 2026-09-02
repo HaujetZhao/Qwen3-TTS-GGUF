@@ -99,7 +99,7 @@ def main():
             return
         for t in eng_tabs:
             if t is not current and t.engine is not None and not t.generating and not t.loading:
-                t.on_load_toggle()
+                t.on_load_toggle(evict=True)
 
     for t in eng_tabs:
         t.unload_others = unload_others
