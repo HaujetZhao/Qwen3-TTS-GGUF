@@ -1,0 +1,58 @@
+[project]
+name = "qwen3-tts"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Haujet Zhao", email = "1292756898@qq.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "gguf>=0.19.0",
+    "numpy>=2.5.2",
+    "scipy>=1.18.1",
+    "sounddevice>=0.5.6",
+    "soundfile>=0.14.0",
+    "ttkbootstrap>=2.2.2",
+    "windnd>=1.0.7",
+]
+
+[project.optional-dependencies]
+# ONNX 运行时二选一
+dml = ["onnxruntime-directml>=1.24.4"]
+gpu = ["onnxruntime-gpu>=1.29.0"]
+# 仅导出/量化（根目录 1x/2x 号脚本）需要；torch 走 torch-cu132 源
+export = [
+    "torch>=2.10",
+    "torchaudio>=2.10",
+    "torchvision>=0.28.0",
+    "transformers==4.57.6",
+    "accelerate==1.12.0",
+    "onnx>=1.22.0",
+    "sentencepiece>=0.2.2",
+    "einops>=0.8.2",
+]
+
+[project.scripts]
+qwen3-tts = "qwen3_tts_gguf:main"
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true
+
+[[tool.uv.index]]
+name = "torch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "torch-cu132" }
+torchvision = { index = "torch-cu132" }
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "qwen3_tts_gguf"   # 真实包在仓库根目录（平铺布局），非默认的 src/ 布局
+module-root = ""
