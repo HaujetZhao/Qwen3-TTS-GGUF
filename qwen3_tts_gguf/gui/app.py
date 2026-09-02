@@ -20,7 +20,7 @@ from .settings_tab import SettingsTab
 from .log_tab import LogTab
 
 UI_SCALE = 1.25        # 整体缩放系数
-DEBUG_TOPMOST = True   # 调试阶段保持窗口占据前台
+DEBUG_TOPMOST = False  # 调试阶段可置 True 让窗口保持前台
 
 
 def pad_title(title, width=6):
