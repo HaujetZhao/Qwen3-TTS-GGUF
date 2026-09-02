@@ -16,6 +16,7 @@ from ttkbootstrap.constants import *
 from .clone_tab import CloneTab
 from .custom_tab import CustomTab
 from .design_tab import DesignTab
+from .tools_tab import ToolsTab
 from .settings_tab import SettingsTab
 from .log_tab import LogTab
 
@@ -60,12 +61,14 @@ def main():
     clone_tab = CloneTab(nb)
     custom_tab = CustomTab(nb)
     design_tab = DesignTab(nb)
+    tools_tab = ToolsTab(nb)
     settings_tab = SettingsTab(nb)
     log_tab = LogTab(nb)
     tabs = [
         (clone_tab, "克隆"),
         (custom_tab, "自定义音色"),
         (design_tab, "音色设计"),
+        (tools_tab, "工具"),
         (settings_tab, "设置"),
         (log_tab, "日志"),
     ]
@@ -81,10 +84,11 @@ def main():
     progress = ttkb.Progressbar(bar, mode="determinate", length=240)
     progress.pack(side=RIGHT)
 
-    for gen_tab in (clone_tab, custom_tab, design_tab):
-        gen_tab.bind_feedback(status_var, progress, log_tab)
+    # 带引擎的页（含工具页）：共用状态栏/进度条/日志，参与单模型互斥与关窗收尾
+    eng_tabs = (clone_tab, custom_tab, design_tab, tools_tab)
 
-    gen_tabs = (clone_tab, custom_tab, design_tab)
+    for tab in eng_tabs:
+        tab.bind_feedback(status_var, progress, log_tab)
 
     def unload_others(current):
         """单模型模式: 在 current 页启动载入前，卸载其他页已载入的引擎。
@@ -93,16 +97,16 @@ def main():
         """
         if not settings_tab.single_model.get():
             return
-        for t in gen_tabs:
+        for t in eng_tabs:
             if t is not current and t.engine is not None and not t.generating and not t.loading:
                 t.on_load_toggle()
 
-    for t in gen_tabs:
+    for t in eng_tabs:
         t.unload_others = unload_others
 
     def on_close():
-        for gen_tab in (clone_tab, custom_tab, design_tab):
-            gen_tab.shutdown()   # 停止生成 -> 卸载引擎
+        for tab in eng_tabs:
+            tab.shutdown()   # 停止生成 -> 卸载引擎
         app.destroy()
 
     # 显式接管关窗：先停生成/卸载引擎，destroy 后 _poll 由 winfo_exists 断开轮询链

@@ -379,16 +379,20 @@ class TTSPageBase(ttkb.Frame):
             return
         self.unload_others(self)  # 单模型模式: 载入前先卸掉其他页的引擎
         # tkinter 变量必须在 UI 线程读——参数在此读好再传给后台线程
-        params = dict(model_dir=self.model_dir.get(),
-                      llm=self.llm_device.get(),
-                      onnx=self.onnx_provider.get())
+        params = self._load_params()
         self.load_btn.configure(state="disabled")
         self.start_btn.configure(state="disabled")  # 载入中禁止生成
         self.loading = True
         self.ui_queue.put(("status", "正在载入模型…"))
         threading.Thread(target=self._load_worker, kwargs=params, daemon=True).start()
 
-    def _load_worker(self, model_dir, llm, onnx):
+    def _load_params(self):
+        """UI 线程读取载入参数（键与 _load_worker 形参对应），子类可覆写增减"""
+        return dict(model_dir=self.model_dir.get(),
+                    llm=self.llm_device.get(),
+                    onnx=self.onnx_provider.get())
+
+    def _load_worker(self, model_dir, onnx, llm=None):
         """后台线程: 建引擎 (进程内解码器)。参数在 UI 线程读好传入。"""
         try:
             t0 = time.time()
