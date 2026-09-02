@@ -392,13 +392,17 @@ class TTSPageBase(ttkb.Frame):
                     llm=self.llm_device.get(),
                     onnx=self.onnx_provider.get())
 
+    def _create_engine(self, model_dir, llm, onnx):
+        """构建引擎实例，子类可覆写调整载入范围"""
+        return TTSEngine(model_dir=model_dir, onnx_provider=onnx,
+                         llm_use_gpu=(llm == "GPU"), subprocess_decoder=False,
+                         chunk_size=64)
+
     def _load_worker(self, model_dir, onnx, llm=None):
         """后台线程: 建引擎 (进程内解码器)。参数在 UI 线程读好传入。"""
         try:
             t0 = time.time()
-            eng = TTSEngine(model_dir=model_dir, onnx_provider=onnx,
-                            llm_use_gpu=(llm == "GPU"), subprocess_decoder=False,
-                            chunk_size=64)
+            eng = self._create_engine(model_dir, llm, onnx)
             self.engine = eng if eng else None
             self.ui_queue.put(("loaded", bool(eng)))
             if eng:

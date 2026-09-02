@@ -5,13 +5,20 @@
 - JSON → WAV：文件夹内逐个 .json 解码出同名 .wav
 
 复用 TTSPageBase 的载入管道（ui_queue / _poll / 载入卸载），推理骨架不适用，
-推理区整体换成工具面板。功能接线在 UI 评估通过后补。
+推理区整体换成工具面板。
 """
+import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog
 
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
+
+from qwen3_tts_gguf import logger
+from qwen3_tts_gguf.inference import TTSEngine
+from qwen3_tts_gguf.inference.schema.result import TTSResult
+from qwen3_tts_gguf.inference.utils.audio import load_audio
 
 from .base_tab import TTSPageBase, ONNX_PROVIDERS, _hook_drop_file, _hook_drop_folder
 
@@ -57,6 +64,10 @@ class ToolsTab(TTSPageBase):
     def _load_params(self):
         # 工具页不载 LLM，无设备选项
         return dict(model_dir=self.model_dir.get(), onnx=self.onnx_provider.get())
+
+    def _create_engine(self, model_dir, llm, onnx):
+        return TTSEngine(model_dir=model_dir, onnx_provider=onnx, load_llm=False,
+                         subprocess_decoder=False, chunk_size=64)
 
     # ---------- 工具区 ----------
 
@@ -119,22 +130,116 @@ class ToolsTab(TTSPageBase):
         btn.grid(row=row, column=2, sticky=E, pady=(6, 0))
         self.tool_buttons.append(btn)
 
-    # ---------- 状态与执行 ----------
+    # ---------- 状态切换 ----------
 
     def _set_loaded(self, ok):
         """载入成功: 按钮变卸载、载入区锁定、工具按钮解锁；失败/卸载: 还原"""
         self.load_btn.configure(text="卸载" if ok else "载入", state="normal")
         for w in self._load_fields:
             w.configure(state="disabled" if ok else "normal")
-        for b in self.tool_buttons:
-            b.configure(state="normal" if ok else "disabled")
+        self._set_generating(False)
 
-    # 功能接线在 UI 评估通过后补，先占位让按钮有反馈
+    def _set_generating(self, on):
+        """工具执行中: 全部按钮锁死（含卸载，卸载是 use-after-free）；结束恢复"""
+        self.generating = on  # 复用基类 busy 标记: 单模型互斥据此跳过本页
+        self.load_btn.configure(state="disabled" if on else "normal")
+        for b in self.tool_buttons:
+            b.configure(state="disabled" if on else "normal")
+        if not on:
+            self.progress.configure(value=0)
+
+    # ---------- 执行管道 ----------
+
+    def _start_tool(self, fn):
+        """UI 线程: 锁按钮 -> 后台线程执行；结束经 gen_done 事件恢复"""
+        if self.generating:
+            return
+        self._set_generating(True)
+        self.ui_queue.put(("status", "工具执行中…"))
+        threading.Thread(target=self._tool_worker, args=(fn,), daemon=True).start()
+
+    def _tool_worker(self, fn):
+        try:
+            fn()
+        except Exception as e:
+            logger.exception("工具执行失败")
+            self.ui_queue.put(("error", f"工具执行异常: {e}"))
+        finally:
+            self.ui_queue.put(("gen_done",))
+
+    def _collect_jsons(self, path):
+        """输入是文件取自身，是文件夹取其中全部 .json"""
+        p = Path(path)
+        return [p] if p.is_file() else sorted(p.glob("*.json"))
+
+    # ---------- 三个工具 ----------
+
     def on_update_json(self):
-        self.ui_queue.put(("status", "「更新 JSON 音色向量」功能待接入"))
+        files = self._collect_jsons(self.upd_json_path.get().strip())
+        if not files:
+            self.ui_queue.put(("error", "未找到 JSON 文件"))
+            return
+        self._start_tool(lambda: self._update_json(files))
+
+    def _update_json(self, files):
+        """逐个锚点：解码出音频后重提 spk_emb，写回原文件"""
+        ok = 0
+        for i, f in enumerate(files):
+            self.ui_queue.put(("status", f"更新音色向量 {i + 1}/{len(files)}: {f.name}"))
+            res = TTSResult.from_json(str(f))
+            if not res.is_valid_anchor:
+                logger.warning(f"[GUI] 跳过无效锚点: {f.name}")
+                continue
+            had_audio = res.audio is not None
+            if res.audio is None:
+                self.engine.decode(res)  # spk_emb 从解码音频重提
+            self.engine.encode(res)
+            res.save_json(str(f), include_audio=had_audio)  # 原来带音频的存档保持带音频
+            ok += 1
+            self.ui_queue.put(("progress", i + 1, len(files)))
+        self.ui_queue.put(("status", f"音色向量已更新 {ok}/{len(files)}"))
 
     def on_wav_to_json(self):
-        self.ui_queue.put(("status", "「WAV → JSON」功能待接入"))
+        wav = self.wav_path.get().strip()
+        text = self.ref_text.get().strip()
+        if not wav:
+            self.ui_queue.put(("error", "未选择 WAV 文件"))
+            return
+        if not text:
+            self.ui_queue.put(("error", "参考文本为空，无法生成锚点"))
+            return
+        self._start_tool(lambda: self._wav_to_json(wav, text))
+
+    def _wav_to_json(self, wav, text):
+        """音频 -> codes + spk_emb，存为同名 .json 锚点"""
+        self.ui_queue.put(("status", f"正在提取音色特征: {Path(wav).name}"))
+        samples = load_audio(wav)
+        res = TTSResult(text=text, text_ids=self.engine.tokenizer.encode(text).ids,
+                        spk_emb=self.engine.speaker_encoder.encode(samples),
+                        codes=self.engine.codec_encoder.encode(samples))
+        out = Path(wav).with_suffix(".json")
+        res.save(str(out))
+        self.ui_queue.put(("progress", 1, 1))
+        self.ui_queue.put(("status", f"已生成锚点: {out.name}"))
 
     def on_json_to_wav(self):
-        self.ui_queue.put(("status", "「JSON → WAV」功能待接入"))
+        files = self._collect_jsons(self.json_dir.get().strip())
+        if not files:
+            self.ui_queue.put(("error", "未找到 JSON 文件"))
+            return
+        self._start_tool(lambda: self._json_to_wav(files))
+
+    def _json_to_wav(self, files):
+        """逐个锚点解码出音频，存为旁边同名 .wav"""
+        ok = 0
+        for i, f in enumerate(files):
+            self.ui_queue.put(("status", f"解码 {i + 1}/{len(files)}: {f.name}"))
+            res = TTSResult.from_json(str(f))
+            if not res.is_valid_anchor:
+                logger.warning(f"[GUI] 跳过无效锚点: {f.name}")
+                continue
+            self.engine.decode(res)
+            res.save(str(f.with_suffix(".wav")))
+            ok += 1
+            self.ui_queue.put(("progress", i + 1, len(files)))
+        self.ui_queue.put(("status", f"解码完成 {ok}/{len(files)}"))

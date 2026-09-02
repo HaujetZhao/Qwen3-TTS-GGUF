@@ -17,7 +17,7 @@ class TTSEngine:
     """
     Qwen3-TTS 引擎：资源池与 Stream 工厂。
     """
-    def __init__(self, model_dir="model", onnx_provider="CUDA", llm_use_gpu=True, chunk_size=12, verbose=True, subprocess_decoder=True):
+    def __init__(self, model_dir="model", onnx_provider="CUDA", llm_use_gpu=True, chunk_size=12, verbose=True, subprocess_decoder=True, load_llm=True):
         import time
         import numpy as np
         from tokenizers import Tokenizer
@@ -37,10 +37,12 @@ class TTSEngine:
             "tokenizer": self.model_dir / 'tokenizer.json',
         }
         
-        # 核心文件预检
-        missing = [name for name, p in self.paths.items() 
-                  if name in ["talker_gguf", "predictor_gguf", "decoder_onnx", "tokenizer"] 
-                  and not p.exists()]
+        # 核心文件预检（LLM 权重仅推理需要，纯编码/解码工具链可跳过）
+        needed = ["decoder_onnx", "tokenizer"]
+        if load_llm:
+            needed += ["talker_gguf", "predictor_gguf"]
+        missing = [name for name, p in self.paths.items()
+                  if name in needed and not p.exists()]
         
         if missing:
             logger.error(f"❌ 引擎初始化失败: 缺少核心模型文件 {missing}")
@@ -72,9 +74,13 @@ class TTSEngine:
                 self.decoder = LocalDecoder(str(self.paths["decoder_onnx"]), onnx_provider=onnx_provider, chunk_size=self.chunk_size)
 
             # 4. 模型引擎初始化 (并行点 2: GGUF 在主进程加载，Decoder 在子进程同时初始化)
-            t_gguf = time.time()
-            self._init_llama_engines(llm_use_gpu)
-            if verbose: print(f"🧠 [Engine] GGUF 推理后端就绪 (耗时: {time.time()-t_gguf:.2f}s)")
+            if load_llm:
+                t_gguf = time.time()
+                self._init_llama_engines(llm_use_gpu)
+                if verbose: print(f"🧠 [Engine] GGUF 推理后端就绪 (耗时: {time.time()-t_gguf:.2f}s)")
+            else:
+                self.talker_model = None
+                self.predictor_model = None
 
             # 5. 子进程模式同步等待解码器信号；进程内模式天然就绪
             if subprocess_decoder:
