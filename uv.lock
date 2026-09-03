@@ -711,6 +711,22 @@ wheels = [
 ]
 
 [[package]]
+name = "onnx-ir"
+version = "1.0.0"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
+dependencies = [
+    { name = "ml-dtypes" },
+    { name = "numpy" },
+    { name = "onnx" },
+    { name = "sympy" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/d6/c2/61194cec0dbc5622273c0ebd592d37cc1dca0d7f1a744f02edd45ac905a3/onnx_ir-1.0.0.tar.gz", hash = "sha256:9e261f25fde8da9612ae5cb43b3b374d5ff469c04af0363cad588b2bb000b812" }
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/91/cd/6d1637172eb59c7b18ac90ed089d1f599a11fe0e63b4db2d017f3bb38a32/onnx_ir-1.0.0-py3-none-any.whl", hash = "sha256:e578f0d608d3062866b48223616eb2d10a6d6d01f8b8faac596129034f483cc7" },
+]
+
+[[package]]
 name = "onnxruntime-directml"
 version = "1.24.4"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
@@ -741,6 +757,23 @@ wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/54/2e/b5738fd3188a29d37fb1742f803cc0b7cdb45d84083ad60b0cff4838194f/onnxruntime_gpu-1.29.0-cp314-cp314-win_amd64.whl", hash = "sha256:4247025e674a666f839c02b90c829277cb2e1be11576d3646cad5c86b7fc26c5" },
     { url = "https://mirrors.aliyun.com/pypi/packages/03/82/5df3df10c528cbcbc550a8770919f15b9fc929e80ecf5a7654cf66ac265e/onnxruntime_gpu-1.29.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:f1330dcda8cb6f7ad46d87cbf2330fc52f007206a1d22f3830d680d36c8de80f" },
     { url = "https://mirrors.aliyun.com/pypi/packages/f7/6b/c8c81fa31264b5a70bad2c1f6c7364c0e964d2e7c6e79a5f1c2a5351a996/onnxruntime_gpu-1.29.0-cp314-cp314t-manylinux_2_34_aarch64.whl", hash = "sha256:70a3cab61b800bff1c1cce1d56ecd31f894075b2eb92577bc6189eb660e3e8b2" },
+]
+
+[[package]]
+name = "onnxscript"
+version = "0.7.1"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
+dependencies = [
+    { name = "ml-dtypes" },
+    { name = "numpy" },
+    { name = "onnx" },
+    { name = "onnx-ir" },
+    { name = "packaging" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/c4/3a/4d79bce3f460e0df7fed54a92ce80827f25da66511da368bb00783ad8d20/onnxscript-0.7.1.tar.gz", hash = "sha256:309fb86484b11fa4ded90dba580e0d63f1a0827588e521cecaf2eeddb46d6e86" }
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/dd/bd/a0c8e737b6afda10e42a597787d53d5b66e00268df6f59184701eeae37d9/onnxscript-0.7.1-py3-none-any.whl", hash = "sha256:544763b7fdef49940cdd9412ff5135cbae96d59ac6bc1921457f21280f40f4b7" },
 ]
 
 [[package]]
@@ -958,6 +991,7 @@ export = [
     { name = "accelerate" },
     { name = "einops" },
     { name = "onnx" },
+    { name = "onnxscript" },
     { name = "sentencepiece" },
     { name = "torch" },
     { name = "torchaudio" },
@@ -979,6 +1013,7 @@ requires-dist = [
     { name = "onnx", marker = "extra == 'export'", specifier = ">=1.22.0" },
     { name = "onnxruntime-directml", marker = "extra == 'dml'", specifier = ">=1.24.4" },
     { name = "onnxruntime-gpu", marker = "extra == 'cuda'", specifier = ">=1.29.0" },
+    { name = "onnxscript", marker = "extra == 'export'", specifier = ">=0.7.1" },
     { name = "scipy", specifier = ">=1.18.1" },
     { name = "sentencepiece", marker = "extra == 'export'", specifier = ">=0.2.2" },
     { name = "sounddevice", specifier = ">=0.5.6" },
@@ -1285,18 +1320,18 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314-manylinux_2_28_aarch64.whl", upload-time = "2026-09-01T19:27:37Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314-manylinux_2_28_x86_64.whl", upload-time = "2026-09-01T19:28:43Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314-win_amd64.whl", upload-time = "2026-09-01T19:28:46Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314t-manylinux_2_28_aarch64.whl", upload-time = "2026-09-01T19:28:55Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314t-manylinux_2_28_x86_64.whl", upload-time = "2026-09-01T19:29:52Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314t-win_amd64.whl", upload-time = "2026-09-01T19:29:52Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315-manylinux_2_28_aarch64.whl", upload-time = "2026-09-01T19:30:03Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315-manylinux_2_28_x86_64.whl", upload-time = "2026-09-01T19:31:08Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315-win_amd64.whl", upload-time = "2026-09-01T19:31:10Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315t-manylinux_2_28_aarch64.whl", upload-time = "2026-09-01T19:31:20Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315t-manylinux_2_28_x86_64.whl", upload-time = "2026-09-01T19:32:31Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315t-win_amd64.whl", upload-time = "2026-09-01T19:32:36Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:94d4bd181e39b6c68d916bc366108fb8134afcba410c333cebc24da078b11017", upload-time = "2026-09-02T19:06:08Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:a8cd9485bd04d14cfdf235bca712964396cf38f6736068d907255a95287202be", upload-time = "2026-09-02T19:06:25Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314-win_amd64.whl", hash = "sha256:9b160a54e7eb62ec3ab65ae4c13289be36d2e5e024a0bd078475791b88b2ad6b", upload-time = "2026-09-02T19:07:05Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:283a1ffe998f71b5c0ebfef9352ef8b854b468c3348d0371be07dd3e27a2abe0", upload-time = "2026-09-02T19:07:47Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:ddb1c7deb14c01fc3a46da9a4e9e4fe474748d4e964e5a8c272bc5116d1370fb", upload-time = "2026-09-02T19:08:03Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp314-cp314t-win_amd64.whl", hash = "sha256:14e3f4397510e4fd3313eb38eb977c91d859b6be9d0b18b016baeb3c24a013c4", upload-time = "2026-09-02T19:08:41Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315-manylinux_2_28_aarch64.whl", hash = "sha256:b68815421e1cd11d64abb35fc55417abe961627f692a7ae4934a33456cf51b05", upload-time = "2026-09-02T19:09:22Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:539326c667a9a39d0082a921aff45a0703d14a95cf07c85ba9a0992ac3b38c83", upload-time = "2026-09-02T19:09:39Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315-win_amd64.whl", hash = "sha256:cbeb1cf919c5234dbc39c7588d29352d79830f8dffc570835cdf4889b81c069f", upload-time = "2026-09-02T19:10:31Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315t-manylinux_2_28_aarch64.whl", hash = "sha256:02ca0c29d3ae8df621e71ec4216287236a5ba9fad7612f998dad25709be2e885", upload-time = "2026-09-02T19:11:13Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:a95e228125f4c6c7eaec892d8702a2134cead56bfd3dbb6dd08ab5f9a587c9f7", upload-time = "2026-09-02T19:11:28Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu132/torch-2.14.0%2Bcu132-cp315-cp315t-win_amd64.whl", hash = "sha256:df799914f36949451d54c79e3ced2e45dd951d0f9df189c0414cc56914d08554", upload-time = "2026-09-02T19:12:08Z" },
 ]
 
 [[package]]

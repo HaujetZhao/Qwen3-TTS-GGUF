@@ -1217,7 +1217,11 @@ class MimiEuclideanCodebook(nn.Module):
     def quantize(self, hidden_states):
         # Projects each vector in `hidden_states` over the nearest centroid and return its index.
         # `hidden_states` should be `[N, D]` with `N` the number of input vectors and `D` the dimension.
-        dists = torch.cdist(hidden_states[None].float(), self.embed[None].float(), p=2)[0]
+        # cdist 会被 ONNX 导出展开为 ‖x‖² − 2x·eᵀ + ‖e‖²；静音帧 ‖x‖² 可超 fp16 上限 65504
+        # 溢出为 Inf → ArgMin 全 Inf 返回 0。同乘 1/16 后 ‖x‖² 缩小 256 倍，
+        # L2 argmin 对正缩放不变，fp32 语义逐位不变（见 Experience/10）。
+        alpha = 1.0 / 16.0
+        dists = torch.cdist(hidden_states[None].float() * alpha, self.embed[None].float() * alpha, p=2)[0]
         embed_ind = dists.argmin(dim=-1)
         return embed_ind
 

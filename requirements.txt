@@ -20,4 +20,4 @@ windnd>=1.0.7
 
 # ---- 以下仅导出/量化（1x/2x 号脚本）需要
 # pip install torch>=2.10 torchaudio>=2.10 torchvision>=0.28.0 
-# pip install transformers==4.57.6 accelerate==1.12.0 onnx>=1.22.0 sentencepiece>=0.2.2 einops>=0.8.2
+# pip install transformers==4.57.6 accelerate==1.12.0 onnx>=1.22.0 onnxscript>=0.7.1 sentencepiece>=0.2.2 einops>=0.8.2
