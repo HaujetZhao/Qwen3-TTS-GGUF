@@ -6,6 +6,8 @@ import tkinter as tk
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
 
+from .i18n import t
+
 
 class QueueLogHandler(logging.Handler):
     """把 inference 的 logger 记录转发到 GUI 事件队列 (线程安全)"""
@@ -56,7 +58,7 @@ class LogTab(ttkb.Frame):
         # 顶部一行：清除按钮右对齐
         top = ttkb.Frame(self)
         top.grid(row=0, column=0, columnspan=3, sticky=EW)
-        ttkb.Button(top, text="清除日志", command=self.clear, width=10).pack(side=RIGHT)
+        ttkb.Button(top, text=t("log.clear"), command=self.clear, width=10).pack(side=RIGHT)
 
         # 不折行：长行保持完整，横向滚动查看
         self.text = tk.Text(self, wrap="none", state="disabled", relief="flat",

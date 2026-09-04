@@ -15,9 +15,7 @@ from qwen3_tts_gguf.inference.utils.audio import load_audio
 from qwen3_tts_gguf.inference.voice import prepare_voice
 
 from .base_tab import TTSPageBase, LANGS_ALL, _hook_drop_file
-
-# 克隆源支持的文件类型
-CLONE_SOURCE_TYPES = [("克隆源", "*.wav *.json"), ("所有文件", "*.*")]
+from .i18n import t
 
 
 class CloneTab(TTSPageBase):
@@ -29,20 +27,20 @@ class CloneTab(TTSPageBase):
     LANGS = {"自动": None, **LANGS_ALL}
 
     def _build_source_rows(self, group):
-        ttkb.Label(group, text="克隆源").grid(row=0, column=0, sticky=W, padx=(0, 10), pady=4)
+        ttkb.Label(group, text=t("clone.source")).grid(row=0, column=0, sticky=W, padx=(0, 10), pady=4)
         self.clone_source = tk.StringVar(value="output/elaborate/Vivian.json")
         source_entry = ttkb.Entry(group, textvariable=self.clone_source)
         source_entry.grid(row=0, column=1, sticky=EW, pady=4)
         _hook_drop_file(source_entry, self.clone_source)
-        ttkb.Button(group, text="选择克隆源", command=self.on_pick_source, width=14).grid(row=0, column=2, padx=(8, 0), pady=4)
+        ttkb.Button(group, text=t("clone.pick_source"), command=self.on_pick_source, width=14).grid(row=0, column=2, padx=(8, 0), pady=4)
         self.clone_source.trace_add("write", lambda *_: self._refresh_play_btn())
 
         # 参考文本: 音频克隆源的转写；留空则零样本克隆 (json 源自带转写，忽略此框)
-        ttkb.Label(group, text="参考文本", width=12).grid(row=1, column=0, sticky=W, padx=(0, 10), pady=4)
+        ttkb.Label(group, text=t("clone.ref_text"), width=12).grid(row=1, column=0, sticky=W, padx=(0, 10), pady=4)
         self.ref_text = tk.StringVar()
         ttkb.Entry(group, textvariable=self.ref_text).grid(row=1, column=1, sticky=EW, pady=4)
         # json 源须先经引擎解码，未载入时不可播放；音频源直接播
-        self.play_btn = ttkb.Button(group, text="播放克隆源", command=self.on_play_source, width=14, state="disabled")
+        self.play_btn = ttkb.Button(group, text=t("clone.play"), command=self.on_play_source, width=14, state="disabled")
         self.play_btn.grid(row=1, column=2, padx=(8, 0), pady=4)
         return 2
 
@@ -54,7 +52,9 @@ class CloneTab(TTSPageBase):
         self.play_btn.configure(state="normal" if ok else "disabled")
 
     def on_pick_source(self):
-        path = filedialog.askopenfilename(title="选择克隆源 (.wav / .json)", filetypes=CLONE_SOURCE_TYPES)
+        # 克隆源支持的文件类型（下拉名要走字典，须在 set_lang 之后取）
+        types = [(t("clone.filetype_source"), "*.wav *.json"), (t("app.all_files"), "*.*")]
+        path = filedialog.askopenfilename(title=t("clone.pick_source_dialog"), filetypes=types)
         if path:
             self.clone_source.set(path)
 
@@ -63,29 +63,29 @@ class CloneTab(TTSPageBase):
         if Path(source).suffix.lower() == ".json":
             # 解码要跑 ONNX，放后台线程，播完/失败后经 play_done 恢复按钮态
             self.play_btn.configure(state="disabled")
-            self.ui_queue.put(("status", "正在解码克隆源音频…"))
+            self.ui_queue.put(("status", t("clone.decoding_status")))
             threading.Thread(target=self._play_worker, args=(source,), daemon=True).start()
         else:
             try:
                 audio = load_audio(source, SAMPLE_RATE)
             except Exception as e:
-                self.ui_queue.put(("error", f"读取克隆源音频失败: {e}"))
+                self.ui_queue.put(("error", t("clone.read_audio_error").format(msg=e)))
                 return
             sd.play(audio, samplerate=SAMPLE_RATE)
-            self.ui_queue.put(("status", f"正在播放 {Path(source).name}"))
+            self.ui_queue.put(("status", t("clone.play_status").format(name=Path(source).name)))
 
     def _play_worker(self, source):
         try:
             res = TTSResult.from_json(source)
             self.engine.decode(res)  # 回写 res.audio
             if res.audio is None or len(res.audio) == 0:
-                self.ui_queue.put(("error", "克隆源 JSON 无可播放的音频数据"))
+                self.ui_queue.put(("error", t("clone.no_audio")))
                 return
             res.play(blocking=False)
-            self.ui_queue.put(("status", "正在播放克隆源音频"))
+            self.ui_queue.put(("status", t("clone.playing_clone")))
         except Exception as e:
             logger.exception("解码克隆源失败")
-            self.ui_queue.put(("error", f"解码克隆源失败: {e}"))
+            self.ui_queue.put(("error", t("clone.decode_error").format(msg=e)))
         finally:
             self.ui_queue.put(("play_done",))
 
@@ -94,7 +94,7 @@ class CloneTab(TTSPageBase):
     def _read_source(self):
         source = self.clone_source.get().strip()
         if not source:
-            self.ui_queue.put(("error", "未选择克隆源"))
+            self.ui_queue.put(("error", t("clone.no_source")))
             return None
         return dict(source=source,
                     ref_text=self.ref_text.get().strip(),
@@ -121,11 +121,11 @@ class CloneTab(TTSPageBase):
                     logger.info("[GUI] 参考文本为空，走零样本克隆 (仅用音色向量)")
                     zero_shot = True
         else:
-            return f"不支持的克隆源类型: {src_path.suffix}"
+            return t("clone.unsupported").format(ext=src_path.suffix)
         voice = prepare_voice(self.engine, self.engine.tokenizer, source,
                               text=ref_text if (not zero_shot and src_path.suffix.lower() != ".json") else None)
         if voice is None:
-            return "克隆源准备失败，详见日志"
+            return t("clone.prepare_failed")
         return [(text, voice, language, zero_shot, cfg) for text in lines]
 
     def _run_batch(self, runner, tasks):
