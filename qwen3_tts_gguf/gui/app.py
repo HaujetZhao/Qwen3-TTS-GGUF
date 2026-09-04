@@ -99,12 +99,12 @@ def main():
         """
         if not settings_tab.single_model.get():
             return
-        for t in eng_tabs:
-            if t is not current and t.engine is not None and not t.generating and not t.loading:
-                t.on_load_toggle(evict=True)
+        for page in eng_tabs:
+            if page is not current and page.engine is not None and not page.generating and not page.loading:
+                page.on_load_toggle(evict=True)
 
-    for t in eng_tabs:
-        t.unload_others = unload_others
+    for page in eng_tabs:
+        page.unload_others = unload_others
 
     def on_close():
         for tab in eng_tabs:
