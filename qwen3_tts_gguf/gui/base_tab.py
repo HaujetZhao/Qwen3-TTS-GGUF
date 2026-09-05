@@ -27,18 +27,18 @@ from qwen3_tts_gguf import logger
 from qwen3_tts_gguf.inference import TTSEngine, TTSConfig
 from qwen3_tts_gguf.inference.batch import BatchRunner
 
+from .i18n import t
 from .log_tab import PrintRedirect, QueueLogHandler
 
 # 设备选项：LLM = Talker + Predictor (GGUF/llama.cpp)；ONNX 组件 = 解码器/编解码器/说话人编码器
 LLM_DEVICES = ["GPU", "CPU"]
 ONNX_PROVIDERS = ["GPU", "CPU"]
 
-# 全量语言（引擎 LANGUAGE_MAP 的 12 种）：自定义音色页用，克隆页用自己的 8 种子集
-LANGS_ALL = {
-    "中文": "Chinese", "英语": "English", "德语": "German", "西班牙语": "Spanish",
-    "日语": "Japanese", "法语": "French", "韩语": "Korean", "俄语": "Russian",
-    "意大利语": "Italian", "葡萄牙语": "Portuguese", "四川话": "sichuan_dialect", "北京话": "beijing_dialect",
-}
+# 全量语言（引擎原生值，下拉直接显示）：自定义音色页用，克隆页用自己的 8 种子集
+LANGS_ALL = (
+    "Chinese", "English", "German", "Spanish", "Japanese", "French",
+    "Korean", "Russian", "Italian", "Portuguese", "sichuan_dialect", "beijing_dialect",
+)
 
 # 默认任务文本存在 texts/<页名>.txt，改文案直接编辑文件即可
 TEXTS_DIR = Path(__file__).parent / "texts"
@@ -143,8 +143,8 @@ class TTSPageBase(ttkb.Frame):
 
     MODEL_DEFAULT = ""      # 模型文件夹默认值，子类必填
     OUT_DEFAULT = ""        # 输出文件夹默认值，子类必填
-    LANGS = LANGS_ALL       # 语言下拉（显示中文 -> 引擎值），子类可覆写
-    TEXT_HINT = "输入文本（每行一个任务，多路批量生成）"
+    LANGS = LANGS_ALL       # 语言下拉（引擎原生值），子类可覆写
+    TEXT_HINT_KEY = "gen.text_hint"  # 任务文本框标题的字典 key，子类可覆写
     TASK_TEXT_DEFAULT = load_task_text("clone")  # 取自个人笔记的 16 句金句，每行一个任务
 
     _log_hooked = False     # 日志 handler / stdout 重定向全局只挂一次
@@ -166,31 +166,31 @@ class TTSPageBase(ttkb.Frame):
     # ---------- 载入区 ----------
 
     def _build_load_group(self):
-        group = ttkb.Labelframe(self, text="载入", padding=8)
+        group = ttkb.Labelframe(self, text=t("load.group"), padding=8)
         group.grid(row=0, column=0, sticky=EW)
         group.columnconfigure(1, weight=1)
 
-        ttkb.Label(group, text="模型文件夹").grid(row=0, column=0, sticky=W, padx=(0, 10), pady=4)
+        ttkb.Label(group, text=t("load.model_folder")).grid(row=0, column=0, sticky=W, padx=(0, 10), pady=4)
         self.model_dir = tk.StringVar(value=self.MODEL_DEFAULT)
         self.model_entry = ttkb.Entry(group, textvariable=self.model_dir)
         self.model_entry.grid(row=0, column=1, sticky=EW, pady=4)
         _hook_drop_folder(self.model_entry, self.model_dir)
-        browse_btn = ttkb.Button(group, text="浏览", command=self.on_browse_model, width=14)
+        browse_btn = ttkb.Button(group, text=t("load.browse"), command=self.on_browse_model, width=14)
         browse_btn.grid(row=0, column=2, padx=(8, 0), pady=4)
 
         # 上下文 + 设备选项一行，全部从左排
         opt_row = ttkb.Frame(group)
         opt_row.grid(row=1, column=0, columnspan=2, sticky=EW, pady=4)
-        ttkb.Label(opt_row, text="上下文大小").pack(side=LEFT, padx=(0, 10))
+        ttkb.Label(opt_row, text=t("load.n_ctx")).pack(side=LEFT, padx=(0, 10))
         self.n_ctx = tk.StringVar(value="512")
         self.n_ctx_entry = ttkb.Entry(opt_row, textvariable=self.n_ctx, width=8)
         self.n_ctx_entry.pack(side=LEFT, padx=(0, 24))
-        ttkb.Label(opt_row, text="LLM 设备").pack(side=LEFT, padx=(0, 10))
+        ttkb.Label(opt_row, text=t("load.llm_device")).pack(side=LEFT, padx=(0, 10))
         self.llm_device = tk.StringVar(value=LLM_DEVICES[0])
         self.llm_combo = ttkb.Combobox(opt_row, textvariable=self.llm_device, values=LLM_DEVICES,
                                        state="readonly", width=8)
         self.llm_combo.pack(side=LEFT, padx=(0, 24))
-        ttkb.Label(opt_row, text="ONNX 组件").pack(side=LEFT, padx=(0, 10))
+        ttkb.Label(opt_row, text=t("load.onnx")).pack(side=LEFT, padx=(0, 10))
         self.onnx_provider = tk.StringVar(value=ONNX_PROVIDERS[0])
         self.onnx_combo = ttkb.Combobox(opt_row, textvariable=self.onnx_provider, values=ONNX_PROVIDERS,
                                         state="readonly", width=9)
@@ -198,13 +198,13 @@ class TTSPageBase(ttkb.Frame):
         self._load_fields = [self.model_entry, self.n_ctx_entry, self.llm_combo, self.onnx_combo, browse_btn]
 
         # 文本随状态切换：未载入叫"载入"，载入后叫"卸载"（on_load_toggle 里改）
-        self.load_btn = ttkb.Button(group, text="载入", command=self.on_load_toggle, width=14, bootstyle=SUCCESS)
+        self.load_btn = ttkb.Button(group, text=t("load.load"), command=self.on_load_toggle, width=14, bootstyle=SUCCESS)
         self.load_btn.grid(row=1, column=2, sticky=E, pady=4)
 
     # ---------- 推理区 ----------
 
     def _build_infer_group(self):
-        group = ttkb.Labelframe(self, text="推理", padding=8)
+        group = ttkb.Labelframe(self, text=t("gen.group"), padding=8)
         group.grid(row=1, column=0, sticky=NSEW, pady=(10, 0))
         group.columnconfigure(1, weight=1)
         self.rowconfigure(1, weight=1)
@@ -212,7 +212,7 @@ class TTSPageBase(ttkb.Frame):
         row = self._build_source_rows(group)
 
         # 任务文本，多余空间全部给它
-        text_group = ttkb.Labelframe(group, text=self.TEXT_HINT, padding=5)
+        text_group = ttkb.Labelframe(group, text=t(self.TEXT_HINT_KEY), padding=5)
         text_group.grid(row=row, column=0, columnspan=3, sticky=NSEW, pady=(8, 3))
         group.rowconfigure(row, weight=1)
         text_group.columnconfigure(0, weight=1)
@@ -228,12 +228,12 @@ class TTSPageBase(ttkb.Frame):
         row += 1
 
         # 输出文件夹
-        ttkb.Label(group, text="输出文件夹").grid(row=row, column=0, sticky=W, padx=(0, 10), pady=4)
+        ttkb.Label(group, text=t("gen.output_folder")).grid(row=row, column=0, sticky=W, padx=(0, 10), pady=4)
         self.output_dir = tk.StringVar(value=self.OUT_DEFAULT)
         output_entry = ttkb.Entry(group, textvariable=self.output_dir)
         output_entry.grid(row=row, column=1, sticky=EW, pady=4)
         _hook_drop_folder(output_entry, self.output_dir)
-        ttkb.Button(group, text="浏览", command=self.on_browse_output, width=14).grid(row=row, column=2, padx=(8, 0), pady=4)
+        ttkb.Button(group, text=t("load.browse"), command=self.on_browse_output, width=14).grid(row=row, column=2, padx=(8, 0), pady=4)
         row += 1
 
         self._build_param_grid(group, row)
@@ -246,18 +246,18 @@ class TTSPageBase(ttkb.Frame):
     # ---------- 参数与控制行 ----------
 
     def _param_entries(self):
-        """参数网格布局: (行, 标签列, 键, 标签, 默认值, 控件类型) —— 键对应 TTSConfig 字段"""
+        """参数网格布局: (行, 标签列, 键, 标签字典 key, 默认值, 控件类型) —— 键对应 TTSConfig 字段"""
         return [
-            (0, 0, "language", "语言", next(iter(self.LANGS)), "combo"),
-            (1, 0, "max_steps", "最大步数", "300", "entry"),
-            (0, 2, "temperature", "Talker 温度", "0.8", "entry"),
-            (1, 2, "seed", "Talker 种子", "42", "entry"),
-            (0, 4, "sub_temperature", "Predictor 温度", "0.2", "entry"),
-            (1, 4, "sub_seed", "Predictor 种子", "45", "entry"),
+            (0, 0, "language", "gen.language", next(iter(self.LANGS)), "combo"),
+            (1, 0, "max_steps", "gen.max_steps", "300", "entry"),
+            (0, 2, "temperature", "gen.talker_temp", "0.8", "entry"),
+            (1, 2, "seed", "gen.talker_seed", "42", "entry"),
+            (0, 4, "sub_temperature", "gen.predictor_temp", "0.2", "entry"),
+            (1, 4, "sub_seed", "gen.predictor_seed", "45", "entry"),
         ]
 
     def _build_param_grid(self, group, row):
-        pg = ttkb.Labelframe(group, text="参数", padding=8)
+        pg = ttkb.Labelframe(group, text=t("gen.params"), padding=8)
         pg.grid(row=row, column=0, columnspan=3, sticky=EW, pady=8)
         # 三个输入列平分窗口变宽多出的空间
         for col in (1, 3, 5):
@@ -268,24 +268,29 @@ class TTSPageBase(ttkb.Frame):
             var = tk.StringVar(value=default)
             # sticky=EW：输入框填满所在列，随窗口变宽而拉宽；width 只是最小尺寸
             if kind == "combo":
-                # combobox 自带箭头和内边距，width=8 才与 width=10 的 entry 等宽（实测 163/164px）
-                ttkb.Combobox(pg, textvariable=var, values=list(self.LANGS), state="readonly", width=8) \
+                # width=16 容纳最长值 sichuan_dialect；其余 entry width=10 与之等宽对齐
+                ttkb.Combobox(pg, textvariable=var, values=list(self.LANGS), state="readonly", width=16) \
                     .grid(row=r + 1, column=col + 1, sticky=EW, pady=3)
             else:
                 ttkb.Entry(pg, textvariable=var, width=10).grid(row=r + 1, column=col + 1, sticky=EW, padx=(0, 18), pady=3)
-            ttkb.Label(pg, text=label, width=12).grid(row=r + 1, column=col, sticky=W, padx=(0, 6), pady=3)
+            ttkb.Label(pg, text=t(label), width=12).grid(row=r + 1, column=col, sticky=W, padx=(0, 6), pady=3)
             self.param_vars[key] = var
+
+    def _selected_language(self):
+        """语言下拉选中值 -> 引擎参数：Auto 传 None 走模型自适应"""
+        sel = self.param_vars["language"].get()
+        return None if sel == "Auto" else sel
 
     def _build_control_row(self, group, row):
         bar = ttkb.Frame(group)
         bar.grid(row=row, column=0, columnspan=3, sticky=EW)
-        self.start_btn = ttkb.Button(bar, text="开始生成", command=self.on_start_stop, width=14,
+        self.start_btn = ttkb.Button(bar, text=t("gen.start"), command=self.on_start_stop, width=14,
                                      bootstyle=PRIMARY, state="disabled")  # 引擎载入前不可生成
         self.start_btn.pack(side=RIGHT)
-        ttkb.Button(bar, text="打开输出文件夹", command=self.on_open_output, width=14).pack(side=RIGHT, padx=(0, 8))
+        ttkb.Button(bar, text=t("gen.open_output"), command=self.on_open_output, width=14).pack(side=RIGHT, padx=(0, 8))
         # 并发路数：每轮同时生成的路数，任务文本按行拆分后按此分批
         self.n_paths = tk.IntVar(value=32)
-        ttkb.Label(bar, text="并发路数").pack(side=LEFT, padx=(0, 6))
+        ttkb.Label(bar, text=t("gen.n_paths")).pack(side=LEFT, padx=(0, 6))
         ttkb.Spinbox(bar, from_=1, to=32, textvariable=self.n_paths, width=5).pack(side=LEFT)
 
     # ---------- 事件管道 ----------
@@ -332,7 +337,7 @@ class TTSPageBase(ttkb.Frame):
 
     def _set_loaded(self, ok: bool):
         """载入成功: 按钮变卸载、载入区锁定；失败/卸载: 还原"""
-        self.load_btn.configure(text="卸载" if ok else "载入", state="normal")
+        self.load_btn.configure(text=t("load.unload") if ok else t("load.load"), state="normal")
         for w in self._load_fields:
             w.configure(state="disabled" if ok else "normal")
         # 生成按钮只在引擎就绪时可用；失败/卸载后禁用
@@ -346,7 +351,7 @@ class TTSPageBase(ttkb.Frame):
     def _set_generating(self, on: bool):
         """生成中: 开始变停止、卸载按钮禁用（须先停止再卸载）"""
         self.generating = on
-        self.start_btn.configure(text="停止" if on else "开始生成",
+        self.start_btn.configure(text=t("gen.stop") if on else t("gen.start"),
                                  bootstyle=DANGER if on else PRIMARY, state="normal")
         self.load_btn.configure(state="disabled" if on else "normal")
         if not on:
@@ -355,12 +360,12 @@ class TTSPageBase(ttkb.Frame):
     # ---------- 载入/卸载 ----------
 
     def on_browse_model(self):
-        path = filedialog.askdirectory(title="选择模型文件夹")
+        path = filedialog.askdirectory(title=t("load.pick_model_dir"))
         if path:
             self.model_dir.set(path)
 
     def on_browse_output(self):
-        path = filedialog.askdirectory(title="选择输出文件夹")
+        path = filedialog.askdirectory(title=t("gen.pick_output_dir"))
         if path:
             self.output_dir.set(path)
 
@@ -377,14 +382,14 @@ class TTSPageBase(ttkb.Frame):
             self._set_loaded(False)
             # 被动卸载(被其他页顶掉)不上状态栏，避免覆盖载入页的"正在载入模型…"
             if not evict:
-                self.ui_queue.put(("status", "已卸载"))
+                self.ui_queue.put(("status", t("load.unloaded")))
             return
         self.unload_others(self)  # 单模型模式: 载入前先卸掉其他页的引擎
         # tkinter 变量必须在 UI 线程读——参数在此读好再传给后台线程
         params = self._load_params()
         self.load_btn.configure(state="disabled")
         self.loading = True
-        self.ui_queue.put(("status", "正在载入模型…"))
+        self.ui_queue.put(("status", t("load.loading")))
         threading.Thread(target=self._load_worker, kwargs=params, daemon=True).start()
 
     def _load_params(self):
@@ -407,14 +412,14 @@ class TTSPageBase(ttkb.Frame):
             self.engine = eng if eng else None
             self.ui_queue.put(("loaded", bool(eng)))
             if eng:
-                self.ui_queue.put(("status", f"引擎就绪 (耗时 {time.time() - t0:.1f}s)"))
+                self.ui_queue.put(("status", t("load.engine_ready").format(sec=f"{time.time() - t0:.1f}")))
             else:
-                self.ui_queue.put(("status", "载入失败，详见日志"))
+                self.ui_queue.put(("status", t("load.load_failed")))
         except Exception as e:
             self.engine = None
             logger.exception("载入失败")
             self.ui_queue.put(("loaded", False))
-            self.ui_queue.put(("error", f"载入异常: {e}"))
+            self.ui_queue.put(("error", t("load.load_error").format(msg=e)))
         finally:
             self.loading = False
 
@@ -424,12 +429,12 @@ class TTSPageBase(ttkb.Frame):
         if self.generating:
             # 停止: 置位取消信号，按钮转"停止中…"直到 worker 收尾
             self.cancel_event.set()
-            self.start_btn.configure(state="disabled", text="停止中…")
-            self.ui_queue.put(("status", "正在停止…"))
+            self.start_btn.configure(state="disabled", text=t("gen.stopping"))
+            self.ui_queue.put(("status", t("gen.stopping_status")))
             return
 
         if self.engine is None:
-            self.ui_queue.put(("error", "引擎未载入")); return
+            self.ui_queue.put(("error", t("gen.engine_not_loaded"))); return
         text = self.task_text.get("1.0", "end")
         src = self._read_source()
         if src is None:
@@ -448,7 +453,7 @@ class TTSPageBase(ttkb.Frame):
             n_ctx = int(self.n_ctx.get())
             n_paths = max(1, int(self.n_paths.get()))
         except ValueError:
-            self.ui_queue.put(("error", "参数格式有误：步数/种子须为整数，温度须为数字"))
+            self.ui_queue.put(("error", t("gen.param_error")))
             return
         self.cancel_event = threading.Event()
         self._set_generating(True)
@@ -479,7 +484,7 @@ class TTSPageBase(ttkb.Frame):
                 self.ui_queue.put(("error", tasks))
                 return
             if not tasks:
-                self.ui_queue.put(("error", "任务文本为空"))
+                self.ui_queue.put(("error", t("gen.empty_tasks")))
                 return
             self.ui_queue.put(("progress", 0, len(tasks)))
             runner = BatchRunner(engine, n_ctx_per_seq=n_ctx, cancel_event=self.cancel_event)
@@ -493,7 +498,7 @@ class TTSPageBase(ttkb.Frame):
             for bi, batch in enumerate(batches):
                 if self.cancel_event.is_set():
                     break
-                self.ui_queue.put(("status", f"批次 {bi + 1}/{len(batches)}（{len(batch)} 路）生成中…"))
+                self.ui_queue.put(("status", t("gen.batch_status").format(i=bi + 1, n=len(batches), k=len(batch))))
                 t0 = time.time()
                 results = self._run_batch(runner, batch)
                 dt = time.time() - t0
@@ -534,13 +539,13 @@ class TTSPageBase(ttkb.Frame):
             total_audio_s = total_frames / 12.5  # 每秒 12.5 帧
             if self.cancel_event.is_set():
                 # 停止时不算 RTF，数据不完整
-                self.ui_queue.put(("status", f"已停止 {ok}/{len(tasks)} 路 → {out_dir}"))
+                self.ui_queue.put(("status", t("gen.stopped").format(ok=ok, n=len(tasks), dir=out_dir)))
             else:
                 rtf = f", RTF {dt_total / total_audio_s:.3f}" if total_audio_s > 0 else ""
-                self.ui_queue.put(("status", f"完成 {ok}/{len(tasks)} 路{rtf} → {out_dir}"))
+                self.ui_queue.put(("status", t("gen.done").format(ok=ok, n=len(tasks), rtf=rtf, dir=out_dir)))
         except Exception as e:
             logger.exception("生成失败")
-            self.ui_queue.put(("error", f"生成异常: {e}"))
+            self.ui_queue.put(("error", t("gen.gen_error").format(msg=e)))
         finally:
             self.ui_queue.put(("gen_done",))  # 单点: 任何结束路径都恢复按钮态
 

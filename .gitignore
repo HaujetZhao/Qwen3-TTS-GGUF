@@ -1,0 +1,71 @@
+# ==================== Python ====================
+__pycache__/
+.venv/
+.ipynb_checkpoints/
+*.ipynb
+.pytest_cache/
+.coverage
+
+# ==================== 模型 / 大文件 ====================
+*.gguf
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.npz
+*.zip
+*.pdf
+model/
+model-*
+checkpoints/
+pickles/
+
+# ==================== 二进制 / 构建产物 ====================
+*.dll
+*.exe
+qwen3_tts_gguf/inference/bin/
+build/
+dist/
+ref/*
+!ref/.gitkeep
+
+# ==================== 音频 ====================
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+
+# ==================== 输出（仅 elaborate 样例入库）====================
+output/*
+!output/elaborate/
+
+# ==================== 日志 / 临时 ====================
+*.log
+logs/
+log/
+*.tmp
+*.bak
+*.swp
+*~
+tmp/
+._____temp/
+brain/
+debug_*
+/test*.py
+
+# ==================== 密钥 / 本地配置 ====================
+dashscope_key.csv
+qwen3_tts_gui.toml
+
+# ==================== 工具 / OS ====================
+.claude/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# ==================== 官方实现快照（仅导出参考）====================
+Qwen3-TTS-main/.gitignore
+Qwen3-TTS-main/.github/

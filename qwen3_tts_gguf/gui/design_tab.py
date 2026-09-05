@@ -7,7 +7,7 @@ class DesignTab(TTSPageBase):
 
     MODEL_DEFAULT = "model-design"
     OUT_DEFAULT = "./output/design"
-    TEXT_HINT = "输入文本（=== 分隔多组；组内 --- 分隔：上方为音色描述，下方为朗读文本）"
+    TEXT_HINT_KEY = "design.text_hint"
     TASK_TEXT_DEFAULT = load_task_text("design")
 
     def _param_entries(self):

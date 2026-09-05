@@ -13,6 +13,7 @@ import tkinter as tk
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
 
+from .i18n import set_lang, load_config, t
 from .clone_tab import CloneTab
 from .custom_tab import CustomTab
 from .design_tab import DesignTab
@@ -44,6 +45,7 @@ def highlight_active_tab():
 
 
 def main():
+    set_lang(load_config())  # 组装控件前读好字典，重启切语言
     app = ttkb.Window(title="Qwen3-TTS GGUF", themename="flatly")
     # 在系统 DPI 给定的 scaling 基础上按系数放大（字体与以字符计宽的控件同步变大）
     base = float(app.tk.call("tk", "scaling"))
@@ -65,12 +67,12 @@ def main():
     settings_tab = SettingsTab(nb)
     log_tab = LogTab(nb)
     tabs = [
-        (clone_tab, "克隆"),
-        (custom_tab, "自定义音色"),
-        (design_tab, "音色设计"),
-        (tools_tab, "工具"),
-        (settings_tab, "设置"),
-        (log_tab, "日志"),
+        (clone_tab, t("app.tab_clone")),
+        (custom_tab, t("app.tab_custom")),
+        (design_tab, t("app.tab_design")),
+        (tools_tab, t("app.tab_tools")),
+        (settings_tab, t("app.tab_settings")),
+        (log_tab, t("app.tab_log")),
     ]
     for tab, title in tabs:
         nb.add(tab, text=pad_title(title))
@@ -79,7 +81,7 @@ def main():
     # 底部状态栏: 状态文字 + 进度条
     bar = ttkb.Frame(app, padding=(12, 4))
     bar.grid(row=1, column=0, sticky=EW)
-    status_var = tk.StringVar(value="就绪")
+    status_var = tk.StringVar(value=t("app.ready"))
     ttkb.Label(bar, textvariable=status_var).pack(side=LEFT)
     progress = ttkb.Progressbar(bar, mode="determinate", length=240)
     progress.pack(side=RIGHT)
@@ -97,12 +99,12 @@ def main():
         """
         if not settings_tab.single_model.get():
             return
-        for t in eng_tabs:
-            if t is not current and t.engine is not None and not t.generating and not t.loading:
-                t.on_load_toggle(evict=True)
+        for page in eng_tabs:
+            if page is not current and page.engine is not None and not page.generating and not page.loading:
+                page.on_load_toggle(evict=True)
 
-    for t in eng_tabs:
-        t.unload_others = unload_others
+    for page in eng_tabs:
+        page.unload_others = unload_others
 
     def on_close():
         for tab in eng_tabs:
