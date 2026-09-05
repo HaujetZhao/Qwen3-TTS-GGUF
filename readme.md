@@ -1,5 +1,7 @@
 # Qwen3-TTS GGUF
 
+[English](readme.en.md)
+
 用 llama.cpp 跑的 Qwen3-TTS，支持流式合成、声音克隆。
 
 ## 模型类型
