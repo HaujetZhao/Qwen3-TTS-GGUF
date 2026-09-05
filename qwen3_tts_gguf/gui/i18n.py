@@ -39,11 +39,11 @@ def available_langs():
 
 # ponytail: 单键配置，设置多了再迁完整配置层
 def load_config():
-    """读界面语言配置，文件不存在/缺键默认 zh"""
+    """读界面语言配置，文件不存在/缺键默认 en"""
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH, "rb") as f:
-            return tomllib.load(f).get("language", "zh")
-    return "zh"
+            return tomllib.load(f).get("language", "en")
+    return "en"
 
 
 def save_lang(code):
