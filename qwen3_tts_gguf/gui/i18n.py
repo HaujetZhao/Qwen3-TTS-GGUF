@@ -3,11 +3,14 @@
 启动时 set_lang 一次（重启切语言），t() 查不到回退返回 key 本身。
 字典按页面分节，见 locales/<lang>.toml。
 """
+import sys
 import tomllib
 from pathlib import Path
 
 LOCALES_DIR = Path(__file__).parent / "locales"
-CONFIG_PATH = Path.home() / ".qwen3_tts_gui.toml"
+# 配置跟随程序本体（便携分发）：打包后 exe 同目录，源码运行在入口脚本旁（仓库根）
+_BASE = Path(sys.executable if getattr(sys, "frozen", False) else sys.argv[0]).resolve().parent
+CONFIG_PATH = _BASE / "qwen3_tts_gui.toml"
 
 _catalog = {}
 
