@@ -34,12 +34,11 @@ from .log_tab import PrintRedirect, QueueLogHandler
 LLM_DEVICES = ["GPU", "CPU"]
 ONNX_PROVIDERS = ["GPU", "CPU"]
 
-# 全量语言（引擎 LANGUAGE_MAP 的 12 种）：自定义音色页用，克隆页用自己的 8 种子集
-LANGS_ALL = {
-    "中文": "Chinese", "英语": "English", "德语": "German", "西班牙语": "Spanish",
-    "日语": "Japanese", "法语": "French", "韩语": "Korean", "俄语": "Russian",
-    "意大利语": "Italian", "葡萄牙语": "Portuguese", "四川话": "sichuan_dialect", "北京话": "beijing_dialect",
-}
+# 全量语言（引擎原生值，下拉直接显示）：自定义音色页用，克隆页用自己的 8 种子集
+LANGS_ALL = (
+    "Chinese", "English", "German", "Spanish", "Japanese", "French",
+    "Korean", "Russian", "Italian", "Portuguese", "sichuan_dialect", "beijing_dialect",
+)
 
 # 默认任务文本存在 texts/<页名>.txt，改文案直接编辑文件即可
 TEXTS_DIR = Path(__file__).parent / "texts"
@@ -144,7 +143,7 @@ class TTSPageBase(ttkb.Frame):
 
     MODEL_DEFAULT = ""      # 模型文件夹默认值，子类必填
     OUT_DEFAULT = ""        # 输出文件夹默认值，子类必填
-    LANGS = LANGS_ALL       # 语言下拉（显示中文 -> 引擎值），子类可覆写
+    LANGS = LANGS_ALL       # 语言下拉（引擎原生值），子类可覆写
     TEXT_HINT_KEY = "gen.text_hint"  # 任务文本框标题的字典 key，子类可覆写
     TASK_TEXT_DEFAULT = load_task_text("clone")  # 取自个人笔记的 16 句金句，每行一个任务
 
@@ -269,13 +268,18 @@ class TTSPageBase(ttkb.Frame):
             var = tk.StringVar(value=default)
             # sticky=EW：输入框填满所在列，随窗口变宽而拉宽；width 只是最小尺寸
             if kind == "combo":
-                # combobox 自带箭头和内边距，width=8 才与 width=10 的 entry 等宽（实测 163/164px）
-                ttkb.Combobox(pg, textvariable=var, values=list(self.LANGS), state="readonly", width=8) \
+                # width=16 容纳最长值 sichuan_dialect；其余 entry width=10 与之等宽对齐
+                ttkb.Combobox(pg, textvariable=var, values=list(self.LANGS), state="readonly", width=16) \
                     .grid(row=r + 1, column=col + 1, sticky=EW, pady=3)
             else:
                 ttkb.Entry(pg, textvariable=var, width=10).grid(row=r + 1, column=col + 1, sticky=EW, padx=(0, 18), pady=3)
             ttkb.Label(pg, text=t(label), width=12).grid(row=r + 1, column=col, sticky=W, padx=(0, 6), pady=3)
             self.param_vars[key] = var
+
+    def _selected_language(self):
+        """语言下拉选中值 -> 引擎参数：Auto 传 None 走模型自适应"""
+        sel = self.param_vars["language"].get()
+        return None if sel == "Auto" else sel
 
     def _build_control_row(self, group, row):
         bar = ttkb.Frame(group)

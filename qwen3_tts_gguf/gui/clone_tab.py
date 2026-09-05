@@ -23,8 +23,8 @@ class CloneTab(TTSPageBase):
 
     MODEL_DEFAULT = "model-base"
     OUT_DEFAULT = "./output/clone"
-    # 语言下拉：官方支持 10 语言 + 2 方言；"自动"传 None 走模型自适应
-    LANGS = {"自动": None, **LANGS_ALL}
+    # 语言下拉：官方支持 10 语言 + 2 方言；Auto 传 None 走模型自适应
+    LANGS = ("Auto", *LANGS_ALL)
 
     def _build_source_rows(self, group):
         ttkb.Label(group, text=t("clone.source")).grid(row=0, column=0, sticky=W, padx=(0, 10), pady=4)
@@ -98,7 +98,7 @@ class CloneTab(TTSPageBase):
             return None
         return dict(source=source,
                     ref_text=self.ref_text.get().strip(),
-                    language=self.LANGS[self.param_vars["language"].get()])
+                    language=self._selected_language())
 
     def _make_tasks(self, text, cfg, src):
         """克隆按行拆任务；克隆源分流: json 自带转写；音频源按参考文本定模式"""

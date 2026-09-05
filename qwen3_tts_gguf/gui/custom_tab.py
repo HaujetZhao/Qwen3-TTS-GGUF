@@ -15,7 +15,7 @@ class CustomTab(TTSPageBase):
 
     MODEL_DEFAULT = "model-custom"
     OUT_DEFAULT = "./output/custom"
-    LANGS = {"自动": None, **LANGS_ALL}  # "自动"传 None，模型按文本自适应（官方支持）
+    LANGS = ("Auto", *LANGS_ALL)  # Auto 传 None，模型按文本自适应（官方支持）
     TEXT_HINT_KEY = "custom.text_hint"
     TASK_TEXT_DEFAULT = load_task_text("custom")
 
@@ -36,7 +36,7 @@ class CustomTab(TTSPageBase):
             self.ui_queue.put(("error", t("custom.no_speaker")))
             return None
         return dict(speaker=int(speaker) if speaker.isdigit() else speaker,
-                    language=self.LANGS[self.param_vars["language"].get()])
+                    language=self._selected_language())
 
     def _make_tasks(self, text, cfg, src):
         # 组内 --- 上块为风格描述（可缺省），下块为朗读文本
